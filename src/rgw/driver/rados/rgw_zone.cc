@@ -532,14 +532,6 @@ int create_realm(const DoutPrefixProvider* dpp, optional_yield y,
     return r;
   }
 
-  // try to set as default. may race with another create, so pass exclusive=true
-  // so we don't override an existing default
-  r = set_default_realm(dpp, y, cfgstore, info, true);
-  if (r < 0 && r != -EEXIST) {
-    ldpp_dout(dpp, 0) << "WARNING: failed to set realm as default: "
-        << cpp_strerror(r) << dendl;
-  }
-
   if (writer_out) {
     *writer_out = std::move(writer);
   }
@@ -1207,6 +1199,18 @@ int SiteConfig::load(const DoutPrefixProvider* dpp, optional_yield y,
   } else if (realm) {
     // load the realm's default zone
     r = cfgstore->read_default_zone(dpp, y, realm->id, zone_params, nullptr);
+    if (r == -ENOENT) {
+      if (realm_name.empty()) {
+        // rgw_realm was not specified, and we found a default realm that
+        // doesn't have a default zone. ignore the realm and try to load the
+        // global default zone
+        realm = std::nullopt;
+        r = read_or_create_default_zone(dpp, y, cfgstore, zone_params);
+      } else {
+        ldpp_dout(dpp, 0) << "No rgw_zone configured, and the selected realm \""
+            << realm->name << "\" does not have a default zone." << dendl;
+      }
+    }
   } else {
     // load or create the "default" zone
     r = read_or_create_default_zone(dpp, y, cfgstore, zone_params);
@@ -1351,6 +1355,20 @@ int RGWZoneGroupPlacementTier::update_params(const JSONFormattable& config)
       retain_head_object = false;
     }
   }
+  if (config.exists("allow_read_through")) {
+    string s = config["allow_read_through"];
+    if (s == "true") {
+      allow_read_through = true;
+    } else {
+      allow_read_through = false;
+    }
+  }
+  if (config.exists("read_through_restore_days")) {
+    r = conf_to_uint64(config, "read_through_restore_days", &read_through_restore_days);
+    if (r < 0) {
+      read_through_restore_days = DEFAULT_READ_THROUGH_RESTORE_DAYS;
+    }
+  }
 
   if (tier_type == "cloud-s3") {
     r = t.s3.update_params(config);
@@ -1363,6 +1381,12 @@ int RGWZoneGroupPlacementTier::clear_params(const JSONFormattable& config)
 {
   if (config.exists("retain_head_object")) {
     retain_head_object = false;
+  }
+  if (config.exists("allow_read_through")) {
+    allow_read_through = false;
+  }
+  if (config.exists("read_through_restore_days")) {
+    read_through_restore_days = DEFAULT_READ_THROUGH_RESTORE_DAYS;
   }
 
   if (tier_type == "cloud-s3") {

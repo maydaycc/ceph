@@ -1,5 +1,5 @@
 import { Component, OnInit } from '@angular/core';
-import { Router } from '@angular/router';
+import { ActivatedRoute, Router } from '@angular/router';
 
 import { ActionLabelsI18n, URLVerbs } from '~/app/shared/constants/app.constants';
 import { CdTableSelection } from '~/app/shared/models/cd-table-selection';
@@ -14,6 +14,12 @@ import { FinishedTask } from '~/app/shared/models/finished-task';
 import { TaskWrapperService } from '~/app/shared/services/task-wrapper.service';
 import { NvmeofService } from '~/app/shared/api/nvmeof.service';
 import { ModalCdsService } from '~/app/shared/services/modal-cds.service';
+import { CephServiceSpec } from '~/app/shared/models/service.interface';
+
+type ComboBoxItem = {
+  content: string;
+  selected?: boolean;
+};
 
 const BASE_URL = 'block/nvmeof/subsystems';
 
@@ -29,6 +35,8 @@ export class NvmeofSubsystemsComponent extends ListWithDetails implements OnInit
   selection = new CdTableSelection();
   tableActions: CdTableAction[];
   subsystemDetails: any[];
+  gwGroups: ComboBoxItem[] = [];
+  group: string = null;
 
   constructor(
     private nvmeofService: NvmeofService,
@@ -36,13 +44,18 @@ export class NvmeofSubsystemsComponent extends ListWithDetails implements OnInit
     public actionLabels: ActionLabelsI18n,
     private router: Router,
     private modalService: ModalCdsService,
-    private taskWrapper: TaskWrapperService
+    private taskWrapper: TaskWrapperService,
+    private route: ActivatedRoute
   ) {
     super();
     this.permission = this.authStorageService.getPermissions().nvmeof;
   }
 
   ngOnInit() {
+    this.route.queryParams.subscribe((params) => {
+      if (params?.['group']) this.onGroupSelection({ content: params?.['group'] });
+    });
+    this.getGatewayGroups();
     this.subsystemsColumns = [
       {
         name: $localize`NQN`,
@@ -62,26 +75,12 @@ export class NvmeofSubsystemsComponent extends ListWithDetails implements OnInit
         name: this.actionLabels.CREATE,
         permission: 'create',
         icon: Icons.add,
-        click: () => this.router.navigate([BASE_URL, { outlets: { modal: [URLVerbs.CREATE] } }]),
-        canBePrimary: (selection: CdTableSelection) => !selection.hasSelection
-      },
-      {
-        name: this.actionLabels.EDIT,
-        permission: 'update',
-        icon: Icons.edit,
         click: () =>
-          this.router.navigate([
-            BASE_URL,
-            {
-              outlets: {
-                modal: [
-                  URLVerbs.EDIT,
-                  this.selection.first().nqn,
-                  this.selection.first().max_namespaces
-                ]
-              }
-            }
-          ])
+          this.router.navigate([BASE_URL, { outlets: { modal: [URLVerbs.CREATE] } }], {
+            queryParams: { group: this.group }
+          }),
+        canBePrimary: (selection: CdTableSelection) => !selection.hasSelection,
+        disable: () => !this.group
       },
       {
         name: this.actionLabels.DELETE,
@@ -92,17 +91,22 @@ export class NvmeofSubsystemsComponent extends ListWithDetails implements OnInit
     ];
   }
 
+  // Subsystems
   updateSelection(selection: CdTableSelection) {
     this.selection = selection;
   }
 
   getSubsystems() {
-    this.nvmeofService
-      .listSubsystems()
-      .subscribe((subsystems: NvmeofSubsystem[] | NvmeofSubsystem) => {
-        if (Array.isArray(subsystems)) this.subsystems = subsystems;
-        else this.subsystems = [subsystems];
-      });
+    if (this.group) {
+      this.nvmeofService
+        .listSubsystems(this.group)
+        .subscribe((subsystems: NvmeofSubsystem[] | NvmeofSubsystem) => {
+          if (Array.isArray(subsystems)) this.subsystems = subsystems;
+          else this.subsystems = [subsystems];
+        });
+    } else {
+      this.subsystems = [];
+    }
   }
 
   deleteSubsystemModal() {
@@ -114,8 +118,34 @@ export class NvmeofSubsystemsComponent extends ListWithDetails implements OnInit
       submitActionObservable: () =>
         this.taskWrapper.wrapTaskAroundCall({
           task: new FinishedTask('nvmeof/subsystem/delete', { nqn: subsystem.nqn }),
-          call: this.nvmeofService.deleteSubsystem(subsystem.nqn)
+          call: this.nvmeofService.deleteSubsystem(subsystem.nqn, this.group)
         })
+    });
+  }
+
+  // Gateway groups
+  onGroupSelection(selected: ComboBoxItem) {
+    selected.selected = true;
+    this.group = selected.content;
+    this.getSubsystems();
+  }
+
+  onGroupClear() {
+    this.group = null;
+    this.getSubsystems();
+  }
+
+  getGatewayGroups() {
+    this.nvmeofService.listGatewayGroups().subscribe((response: CephServiceSpec[][]) => {
+      if (response?.[0].length) {
+        this.gwGroups = response[0].map((group: CephServiceSpec) => {
+          return {
+            content: group?.spec?.group
+          };
+        });
+      }
+      // Select first group if no group is selected
+      if (!this.group && this.gwGroups.length) this.onGroupSelection(this.gwGroups[0]);
     });
   }
 }

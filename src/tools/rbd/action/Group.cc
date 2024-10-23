@@ -805,9 +805,13 @@ int execute_group_snap_info(const po::variables_map &vm,
   } else {
     std::cout << "rbd group snapshot '" << group_snap.name << "':\n"
               << "\tid: " << group_snap.id << std::endl
-              << "\tstate: " << state_string << std::endl
-              << "\timage snap: " << group_snap.image_snap_name << std::endl
-              << "\timages:" << std::endl;
+              << "\tstate: " << state_string << std::endl;
+    if (!group_snap.image_snaps.empty()) {
+      std::cout << "\timage snap: " << group_snap.image_snap_name << std::endl
+                << "\timages:" << std::endl;
+    } else {
+      ceph_assert(group_snap.image_snap_name.empty());
+    }
   }
 
   std::sort(group_snap.image_snaps.begin(), group_snap.image_snaps.end(),
@@ -1042,7 +1046,7 @@ Shell::Action action_list(
   {"group", "list"}, {"group", "ls"}, "List rbd groups.",
   "", &get_list_arguments, &execute_list);
 Shell::Action action_rename(
-  {"group", "rename"}, {}, "Rename a group within pool.",
+  {"group", "rename"}, {}, "Rename a group within its pool or namespace.",
   "", &get_rename_arguments, &execute_rename);
 Shell::Action action_info(
   {"group", "info"}, {}, "Show information about a group.",

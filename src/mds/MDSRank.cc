@@ -12,6 +12,7 @@
  *
  */
 
+#include <array>
 #include <string_view>
 #include <typeinfo>
 #include "common/debug.h"
@@ -70,7 +71,7 @@ public:
   }
 
   void send() {
-    ceph_assert(ceph_mutex_is_locked(mds->mds_lock));
+    ceph_assert(ceph_mutex_is_locked_by_me(mds->mds_lock));
 
     dout(20) << __func__ << dendl;
 
@@ -96,11 +97,12 @@ private:
 
     // I need to seal off the current segment, and then mark all
     // previous segments for expiry
-    auto sle = mdcache->create_subtree_map();
+    auto* sle = mdcache->create_subtree_map();
     mdlog->submit_entry(sle);
+    seq = sle->get_seq();
 
     Context *ctx = new LambdaContext([this](int r) {
-        handle_flush_mdlog(r);
+        handle_clear_mdlog(r);
       });
 
     // Flush initially so that all the segments older than our new one
@@ -109,34 +111,8 @@ private:
     mdlog->wait_for_safe(new MDSInternalContextWrapper(mds, ctx));
   }
 
-  void handle_flush_mdlog(int r) {
-    dout(20) << __func__ << ": r=" << r << dendl;
-
-    if (r != 0) {
-      *ss << "Error " << r << " (" << cpp_strerror(r) << ") while flushing journal";
-      complete(r);
-      return;
-    }
-
-    clear_mdlog();
-  }
-
-  void clear_mdlog() {
-    dout(20) << __func__ << dendl;
-
-    Context *ctx = new LambdaContext([this](int r) {
-        handle_clear_mdlog(r);
-      });
-
-    // Because we may not be the last wait_for_safe context on MDLog,
-    // and subsequent contexts might wake up in the middle of our
-    // later trim_all and interfere with expiry (by e.g. marking
-    // dirs/dentries dirty on previous log segments), we run a second
-    // wait_for_safe here. See #10368
-    mdlog->wait_for_safe(new MDSInternalContextWrapper(mds, ctx));
-  }
-
   void handle_clear_mdlog(int r) {
+    ceph_assert(ceph_mutex_is_locked_by_me(mds->mds_lock));
     dout(20) << __func__ << ": r=" << r << dendl;
 
     if (r != 0) {
@@ -152,7 +128,7 @@ private:
     // Put all the old log segments into expiring or expired state
     dout(5) << __func__ << ": beginning segment expiry" << dendl;
 
-    int ret = mdlog->trim_all();
+    int ret = mdlog->trim_to(seq);
     if (ret != 0) {
       *ss << "Error " << ret << " (" << cpp_strerror(ret) << ") while trimming log";
       complete(ret);
@@ -176,60 +152,38 @@ private:
             << " segments to expire" << dendl;
 
     if (!expiry_gather.has_subs()) {
-      trim_segments();
+      trim_expired_segments();
       return;
     }
 
-    Context *ctx = new LambdaContext([this](int r) {
-        handle_expire_segments(r);
-      });
+    /* Because this context may be finished with the MDLog::submit_mutex held,
+     * complete it in the MDS finisher thread.
+     */
+    Context *ctx = new C_OnFinisher(new LambdaContext([this,mds=mds](int r) {
+        ceph_assert(r == 0); // MDLog is not allowed to raise errors via
+                             // wait_for_expiry
+        std::lock_guard locker(mds->mds_lock);
+        trim_expired_segments();
+      }), mds->finisher);
     expiry_gather.set_finisher(new MDSInternalContextWrapper(mds, ctx));
     expiry_gather.activate();
   }
 
-  void handle_expire_segments(int r) {
-    dout(20) << __func__ << ": r=" << r << dendl;
-
-    ceph_assert(r == 0); // MDLog is not allowed to raise errors via
-                         // wait_for_expiry
-    trim_segments();
-  }
-
-  void trim_segments() {
-    dout(20) << __func__ << dendl;
-
-    Context *ctx = new C_OnFinisher(new LambdaContext([this](int) {
-          std::lock_guard locker(mds->mds_lock);
-          trim_expired_segments();
-        }), mds->finisher);
-    ctx->complete(0);
-  }
-
   void trim_expired_segments() {
+    ceph_assert(ceph_mutex_is_locked_by_me(mds->mds_lock));
     dout(5) << __func__ << ": expiry complete, expire_pos/trim_pos is now "
             << std::hex << mdlog->get_journaler()->get_expire_pos() << "/"
             << mdlog->get_journaler()->get_trimmed_pos() << dendl;
 
     // Now everyone I'm interested in is expired
-    mdlog->trim_expired_segments();
+    auto* ctx = new MDSInternalContextWrapper(mds, new LambdaContext([this](int r) {
+      handle_write_head(r);
+    }));
+    mdlog->trim_expired_segments(ctx);
 
-    dout(5) << __func__ << ": trim complete, expire_pos/trim_pos is now "
+    dout(5) << __func__ << ": trimming is complete; wait for journal head write. Journal expire_pos/trim_pos is now "
             << std::hex << mdlog->get_journaler()->get_expire_pos() << "/"
             << mdlog->get_journaler()->get_trimmed_pos() << dendl;
-
-    write_journal_head();
-  }
-
-  void write_journal_head() {
-    dout(20) << __func__ << dendl;
-
-    Context *ctx = new LambdaContext([this](int r) {
-        std::lock_guard locker(mds->mds_lock);
-        handle_write_head(r);
-      });
-    // Flush the journal header so that readers will start from after
-    // the flushed region
-    mdlog->get_journaler()->write_head(ctx);
   }
 
   void handle_write_head(int r) {
@@ -243,12 +197,17 @@ private:
   }
 
   void finish(int r) override {
+    /* We don't need the mds_lock but MDLog::write_head takes an MDSContext so
+     * we are expected to have it.
+     */
+    ceph_assert(ceph_mutex_is_locked_by_me(mds->mds_lock));
     dout(20) << __func__ << ": r=" << r << dendl;
     on_finish->complete(r);
   }
 
   MDCache *mdcache;
   MDLog *mdlog;
+  SegmentBoundary::seq_t seq = 0;
   std::ostream *ss;
   Context *on_finish;
 
@@ -781,8 +740,10 @@ void MDSRankDispatcher::tick()
       }
     }
 
-    if (whoami == 0)
+    if (whoami == 0) {
       scrubstack->advance_scrub_status();
+      scrubstack->purge_old_scrub_counters();
+    }
   }
 
   if (is_active() || is_stopping()) {
@@ -2964,6 +2925,15 @@ void MDSRankDispatcher::handle_asok_command(
     command_scrub_resume(f);
   } else if (command == "scrub status") {
     command_scrub_status(f);
+  } else if (command == "scrub purge_status") {
+    if (whoami != 0) {
+      *css << "Not rank 0";
+      r = -CEPHFS_EXDEV;
+      goto out;
+    }
+    string tag;
+    cmd_getval(cmdmap, "tag", tag);
+    command_scrub_purge_status(tag);
   } else if (command == "tag path") {
     if (whoami != 0) {
       *css << "Not rank 0";
@@ -3137,7 +3107,7 @@ void MDSRankDispatcher::evict_clients(
   dout(20) << __func__ << " matched " << victims.size() << " sessions" << dendl;
 
   if (victims.empty()) {
-    on_finish(-ESRCH, "no hosts match", outbl);
+    on_finish(0, "no hosts match", outbl);
     return;
   }
 
@@ -3222,6 +3192,11 @@ void MDSRank::command_scrub_resume(Formatter *f) {
 void MDSRank::command_scrub_status(Formatter *f) {
   std::lock_guard l(mds_lock);
   scrubstack->scrub_status(f);
+}
+
+void MDSRank::command_scrub_purge_status(std::string_view tag) {
+  std::lock_guard l(mds_lock);
+  scrubstack->purge_scrub_counters(tag);
 }
 
 void MDSRank::command_get_subtrees(Formatter *f)
@@ -4053,95 +4028,106 @@ epoch_t MDSRank::get_osd_epoch() const
 
 const char** MDSRankDispatcher::get_tracked_conf_keys() const
 {
-  static const char* KEYS[] = {
-    "clog_to_graylog",
-    "clog_to_graylog_host",
-    "clog_to_graylog_port",
-    "clog_to_monitors",
-    "clog_to_syslog",
-    "clog_to_syslog_facility",
-    "clog_to_syslog_level",
-    "fsid",
-    "host",
-    "mds_alternate_name_max",
-    "mds_bal_export_pin",
-    "mds_bal_fragment_dirs",
-    "mds_bal_fragment_fast_factor",
-    "mds_bal_fragment_interval",
-    "mds_bal_fragment_size_max",
-    "mds_bal_interval",
-    "mds_bal_max",
-    "mds_bal_max_until",
-    "mds_bal_merge_size",
-    "mds_bal_mode",
-    "mds_bal_replicate_threshold",
-    "mds_bal_sample_interval",
-    "mds_bal_split_bits",
-    "mds_bal_split_rd",
-    "mds_bal_split_size",
-    "mds_bal_split_wr",
-    "mds_bal_unreplicate_threshold",
-    "mds_cache_memory_limit",
-    "mds_cache_mid",
-    "mds_cache_reservation",
-    "mds_cache_quiesce_decay_rate",
-    "mds_cache_quiesce_threshold",
-    "mds_cache_quiesce_sleep",
-    "mds_cache_trim_decay_rate",
-    "mds_cap_acquisition_throttle_retry_request_time",
-    "mds_cap_revoke_eviction_timeout",
-    "mds_debug_subtrees",
-    "mds_dir_max_entries",
-    "mds_dump_cache_threshold_file",
-    "mds_server_dispatch_client_request_delay",
-    "mds_server_dispatch_killpoint_random",
-    "mds_dump_cache_threshold_formatter",
-    "mds_enable_op_tracker",
-    "mds_export_ephemeral_distributed",
-    "mds_export_ephemeral_random",
-    "mds_export_ephemeral_random_max",
-    "mds_extraordinary_events_dump_interval",
-    "mds_forward_all_requests_to_auth",
-    "mds_health_cache_threshold",
-    "mds_heartbeat_grace",
-    "mds_heartbeat_reset_grace",
-    "mds_inject_journal_corrupt_dentry_first",
-    "mds_inject_migrator_session_race",
-    "mds_inject_rename_corrupt_dentry_first",
-    "mds_kill_dirfrag_at",
-    "mds_kill_shutdown_at",
-    "mds_log_event_large_threshold",
-    "mds_log_events_per_segment",
-    "mds_log_major_segment_event_ratio",
-    "mds_log_max_events",
-    "mds_log_max_segments",
-    "mds_log_pause",
-    "mds_log_skip_corrupt_events",
-    "mds_log_skip_unbounded_events",
-    "mds_max_caps_per_client",
-    "mds_max_export_size",
-    "mds_max_purge_files",
-    "mds_max_purge_ops",
-    "mds_max_purge_ops_per_pg",
-    "mds_max_snaps_per_dir",
-    "mds_op_complaint_time",
-    "mds_op_history_duration",
-    "mds_op_history_size",
-    "mds_op_log_threshold",
-    "mds_recall_max_decay_rate",
-    "mds_recall_warning_decay_rate",
-    "mds_request_load_average_decay_rate",
-    "mds_session_cache_liveness_decay_rate",
-    "mds_session_cap_acquisition_decay_rate",
-    "mds_session_cap_acquisition_throttle",
-    "mds_session_max_caps_throttle_ratio",
-    "mds_symlink_recovery",
-    "mds_session_metadata_threshold",
-    "mds_log_trim_threshold",
-    "mds_log_trim_decay_rate",
-    NULL
-  };
-  return KEYS;
+#define KEYS \
+    "clog_to_graylog", \
+    "clog_to_graylog_host", \
+    "clog_to_graylog_port", \
+    "clog_to_monitors", \
+    "clog_to_syslog", \
+    "clog_to_syslog_facility", \
+    "clog_to_syslog_level", \
+    "fsid", \
+    "host", \
+    "mds_alternate_name_max", \
+    "mds_bal_export_pin", \
+    "mds_bal_fragment_dirs", \
+    "mds_bal_fragment_fast_factor", \
+    "mds_bal_fragment_interval", \
+    "mds_bal_fragment_size_max", \
+    "mds_bal_interval", \
+    "mds_bal_max", \
+    "mds_bal_max_until", \
+    "mds_bal_merge_size", \
+    "mds_bal_mode", \
+    "mds_bal_replicate_threshold", \
+    "mds_bal_sample_interval", \
+    "mds_bal_split_bits", \
+    "mds_bal_split_rd", \
+    "mds_bal_split_size", \
+    "mds_bal_split_wr", \
+    "mds_bal_unreplicate_threshold", \
+    "mds_cache_memory_limit", \
+    "mds_cache_mid", \
+    "mds_cache_quiesce_decay_rate", \
+    "mds_cache_quiesce_sleep", \
+    "mds_cache_quiesce_threshold", \
+    "mds_cache_reservation", \
+    "mds_cache_trim_decay_rate", \
+    "mds_cap_acquisition_throttle_retry_request_time", \
+    "mds_cap_revoke_eviction_timeout", \
+    "mds_debug_subtrees", \
+    "mds_dir_max_entries", \
+    "mds_dump_cache_threshold_file", \
+    "mds_dump_cache_threshold_formatter", \
+    "mds_enable_op_tracker", \
+    "mds_export_ephemeral_distributed", \
+    "mds_export_ephemeral_random", \
+    "mds_export_ephemeral_random_max", \
+    "mds_extraordinary_events_dump_interval", \
+    "mds_forward_all_requests_to_auth", \
+    "mds_health_cache_threshold", \
+    "mds_heartbeat_grace", \
+    "mds_heartbeat_reset_grace", \
+    "mds_inject_journal_corrupt_dentry_first", \
+    "mds_inject_migrator_session_race", \
+    "mds_inject_rename_corrupt_dentry_first", \
+    "mds_kill_dirfrag_at", \
+    "mds_kill_shutdown_at", \
+    "mds_log_event_large_threshold", \
+    "mds_log_events_per_segment", \
+    "mds_log_major_segment_event_ratio", \
+    "mds_log_max_events", \
+    "mds_log_max_segments", \
+    "mds_log_pause", \
+    "mds_log_skip_corrupt_events", \
+    "mds_log_skip_unbounded_events", \
+    "mds_log_trim_decay_rate", \
+    "mds_log_trim_threshold", \
+    "mds_max_caps_per_client", \
+    "mds_max_export_size", \
+    "mds_max_purge_files", \
+    "mds_max_purge_ops", \
+    "mds_max_purge_ops_per_pg", \
+    "mds_max_snaps_per_dir", \
+    "mds_op_complaint_time", \
+    "mds_op_history_duration", \
+    "mds_op_history_size", \
+    "mds_op_log_threshold", \
+    "mds_recall_max_decay_rate", \
+    "mds_recall_warning_decay_rate", \
+    "mds_request_load_average_decay_rate", \
+    "mds_server_dispatch_client_request_delay", \
+    "mds_server_dispatch_killpoint_random", \
+    "mds_session_cache_liveness_decay_rate", \
+    "mds_session_cap_acquisition_decay_rate", \
+    "mds_session_cap_acquisition_throttle", \
+    "mds_session_max_caps_throttle_ratio", \
+    "mds_session_metadata_threshold", \
+    "mds_symlink_recovery"
+
+  constexpr bool is_sorted = [] () constexpr {
+    constexpr auto arr = std::to_array<std::string_view>({KEYS});
+    for (unsigned long i = 0; i < arr.size()-1; ++i) {
+      if (arr[i] > arr[i+1]) {
+        return false;
+      }
+    }
+    return true;
+  }();
+  static_assert(is_sorted, "keys are not sorted!");
+
+  static char const* keys[] = {KEYS, nullptr};
+  return keys;
 }
 
 void MDSRankDispatcher::handle_conf_change(const ConfigProxy& conf, const std::set<std::string>& changed)
@@ -4221,6 +4207,7 @@ void MDSRankDispatcher::handle_conf_change(const ConfigProxy& conf, const std::s
     mdcache->handle_conf_change(changed, *mdsmap);
     mdlog->handle_conf_change(changed, *mdsmap);
     purge_queue.handle_conf_change(changed, *mdsmap);
+    scrubstack->handle_conf_change(changed);
   }));
 }
 

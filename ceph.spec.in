@@ -115,10 +115,12 @@
 %ifarch x86_64
 %if 0%{?fedora} || 0%{?rhel} >= 9
 %bcond_without system_qat
-%else # not fedora/rhel
+%else
+# not fedora/rhel
 %bcond_with system_qat
 %endif
-%else # not x86_64
+%else
+# not x86_64
 %bcond_with system_qat
 %endif
 %if 0%{?fedora} || 0%{?suse_version} || 0%{?rhel} >= 8 || 0%{?openEuler}
@@ -284,6 +286,7 @@ BuildRequires:	gperftools-devel >= 2.4
 BuildRequires:	libaio-devel
 BuildRequires:	libblkid-devel >= 2.17
 BuildRequires:	cryptsetup-devel
+BuildRequires:	libnbd-devel
 BuildRequires:	libcurl-devel
 BuildRequires:	libcap-devel
 BuildRequires:	libcap-ng-devel
@@ -440,6 +443,7 @@ BuildRequires:	libibverbs-devel
 BuildRequires:  librdmacm-devel
 BuildRequires:  ninja-build
 BuildRequires:  openldap-devel
+BuildRequires:  numactl-devel
 #BuildRequires:  krb5-devel
 BuildRequires:  openssl-devel
 BuildRequires:  CUnit-devel
@@ -468,9 +472,9 @@ BuildRequires:	python%{python3_pkgversion}-scipy
 BuildRequires:	python%{python3_pkgversion}-werkzeug
 BuildRequires:	python%{python3_pkgversion}-pyOpenSSL
 %endif
+BuildRequires:	jsonnet
 %if 0%{?suse_version}
 BuildRequires:	golang-github-prometheus-prometheus
-BuildRequires:	jsonnet
 BuildRequires:	libxmlsec1-1
 BuildRequires:	libxmlsec1-nss1
 BuildRequires:	libxmlsec1-openssl1
@@ -509,7 +513,6 @@ BuildRequires:  openEuler-rpm-config
 %if 0%{with seastar}
 %if 0%{?fedora} || 0%{?rhel} || 0%{?openEuler}
 BuildRequires:  cryptopp-devel
-BuildRequires:  numactl-devel
 %endif
 %if 0%{?suse_version}
 BuildRequires:  libcryptopp-devel
@@ -977,7 +980,6 @@ Requires: parted
 Requires: util-linux
 Requires: xfsprogs
 Requires: python%{python3_pkgversion}-setuptools
-Requires: python%{python3_pkgversion}-packaging
 Requires: python%{python3_pkgversion}-ceph-common = %{_epoch_prefix}%{version}-%{release}
 %description volume
 This package contains a tool to deploy OSD with different devices like
@@ -1182,7 +1184,7 @@ Group:		System/Libraries
 Obsoletes:	libcephfs1 < %{_epoch_prefix}%{version}-%{release}
 %if 0%{?rhel} || 0%{?fedora} || 0%{?openEuler}
 Obsoletes:	ceph-libs < %{_epoch_prefix}%{version}-%{release}
-Obsoletes:	ceph-libcephfs
+Obsoletes:	ceph-libcephfs < %{_epoch_prefix}%{version}-%{release}
 %endif
 %description -n libcephfs2
 Ceph is a distributed network file system designed to provide excellent

@@ -12,6 +12,7 @@ if(WIN32)
   add_library(dlfcn_win32 STATIC win32/dlfcn.cc win32/errno.cc)
 endif()
 
+add_subdirectory(io_exerciser)
 add_subdirectory(options)
 
 set(common_srcs
@@ -225,6 +226,7 @@ elseif(HAVE_POWER8)
     list(APPEND crc32_srcs
       crc32c_ppc_asm.S
       crc32c_ppc_fast_zero_asm.S)
+    set_source_files_properties(crc32c_ppc_asm.S PROPERTIES COMPILE_FLAGS -D__ASSEMBLY__)
   endif(HAVE_PPC64LE)
 elseif(HAVE_ARMV8_CRC)
   list(APPEND crc32_srcs

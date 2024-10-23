@@ -47,12 +47,15 @@ class NvmeofService(CephService):
         transport_tcp_options = json.dumps(spec.transport_tcp_options) if spec.transport_tcp_options else None
         name = '{}.{}'.format(utils.name_to_config_section('nvmeof'), nvmeof_gw_id)
         rados_id = name[len('client.'):] if name.startswith('client.') else name
+        addr = spec.addr or host_ip
+        discovery_addr = spec.discovery_addr or host_ip
         context = {
             'spec': spec,
             'name': name,
-            'addr': host_ip,
+            'addr': addr,
+            'discovery_addr': discovery_addr,
             'port': spec.port,
-            'spdk_protocol_log_level': 'WARNING',
+            'spdk_log_level': 'WARNING',
             'rpc_socket_dir': '/var/tmp/',
             'rpc_socket_name': 'spdk.sock',
             'transport_tcp_options': transport_tcp_options,
@@ -92,14 +95,14 @@ class NvmeofService(CephService):
         """ Overrides the daemon_check_post to add nvmeof gateways safely
         """
         self.mgr.log.info(f"nvmeof daemon_check_post {daemon_descrs}")
-        spec = cast(NvmeofServiceSpec,
-                    self.mgr.spec_store.all_specs.get(daemon_descrs[0].service_name(), None))
-        if not spec:
-            self.mgr.log.error(f'Failed to find spec for {daemon_descrs[0].name()}')
-            return
-        pool = spec.pool
-        group = spec.group
         for dd in daemon_descrs:
+            spec = cast(NvmeofServiceSpec,
+                        self.mgr.spec_store.all_specs.get(dd.service_name(), None))
+            if not spec:
+                self.mgr.log.error(f'Failed to find spec for {dd.name()}')
+                return
+            pool = spec.pool
+            group = spec.group
             # Notify monitor about this gateway creation
             cmd = {
                 'prefix': 'nvme-gw create',
@@ -120,10 +123,9 @@ class NvmeofService(CephService):
             gateways = json.loads(out)['gateways']
             cmd_dicts = []
 
-            spec = cast(NvmeofServiceSpec,
-                        self.mgr.spec_store.all_specs.get(daemon_descrs[0].service_name(), None))
-
             for dd in daemon_descrs:
+                spec = cast(NvmeofServiceSpec,
+                            self.mgr.spec_store.all_specs.get(dd.service_name(), None))
                 service_name = dd.service_name()
                 if dd.hostname is None:
                     err_msg = ('Trying to config_dashboard nvmeof but no hostname is defined')
@@ -144,7 +146,9 @@ class NvmeofService(CephService):
                     cmd_dicts.append({
                         'prefix': 'dashboard nvmeof-gateway-add',
                         'inbuf': service_url,
-                        'name': service_name
+                        'name': service_name,
+                        'group': spec.group,
+                        'daemon_name': dd.name()
                     })
             return cmd_dicts
 

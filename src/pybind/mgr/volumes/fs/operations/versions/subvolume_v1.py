@@ -85,7 +85,7 @@ class SubvolumeV1(SubvolumeBase, SubvolumeTemplate):
         """ Path to user data directory within a subvolume snapshot named 'snapname' """
         return self.snapshot_path(snapname)
 
-    def create(self, size, isolate_nspace, pool, mode, uid, gid):
+    def create(self, size, isolate_nspace, pool, mode, uid, gid, earmark):
         subvolume_type = SubvolumeTypes.TYPE_NORMAL
         try:
             initial_state = SubvolumeOpSm.get_init_state(subvolume_type)
@@ -103,7 +103,8 @@ class SubvolumeV1(SubvolumeBase, SubvolumeTemplate):
                 'gid': gid,
                 'data_pool': pool,
                 'pool_namespace': self.namespace if isolate_nspace else None,
-                'quota': size
+                'quota': size,
+                'earmark': earmark
             }
             self.set_attrs(subvol_path, attrs)
 
@@ -673,6 +674,11 @@ class SubvolumeV1(SubvolumeBase, SubvolumeTemplate):
             raise VolumeException(-errno.EINVAL, "error fetching subvolume metadata")
         return clone_source
 
+    def get_clone_source(self):
+        src = self._get_clone_source()
+        return (src['volume'], src.get('group', None), src['subvolume'],
+                src['snapshot'])
+
     def _get_clone_failure(self):
         clone_failure = {
             'errno'     : self.metadata_mgr.get_option(MetadataManager.CLONE_FAILURE_SECTION, MetadataManager.CLONE_FAILURE_META_KEY_ERRNO),
@@ -752,7 +758,7 @@ class SubvolumeV1(SubvolumeBase, SubvolumeTemplate):
 
         try:
             if self.has_pending_clones(snapname):
-                pending_track_id_list = self.metadata_mgr.list_all_keys_with_specified_values_from_section('clone snaps', snapname)
+                pending_track_id_list = self.metadata_mgr.filter_keys('clone snaps', snapname)
             else:
                 return pending_clones_info
         except MetadataMgrException as me:
@@ -774,9 +780,9 @@ class SubvolumeV1(SubvolumeBase, SubvolumeTemplate):
                     raise VolumeException(-e.args[0], e.args[1])
                 else:
                     try:
-                        # If clone is completed between 'list_all_keys_with_specified_values_from_section'
-                        # and readlink(track_id_path) call then readlink will fail with error ENOENT (2)
-                        # Hence we double check whether track_id is exist in .meta file or not.
+                        # If clone is completed between 'filter_keys' and readlink(track_id_path) call
+                        # then readlink will fail with error ENOENT (2). Hence we double check whether
+                        # track_id exists in .meta file or not.
                         # Edge case scenario.
                         # If track_id for clone exist but path /volumes/_index/clone/{track_id} not found
                         # then clone is orphan.

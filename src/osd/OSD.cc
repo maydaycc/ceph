@@ -1819,11 +1819,6 @@ void OSDService::queue_for_scrub(PG* pg, Scrub::scrub_prio_t with_priority)
   queue_scrub_event_msg_default_cost<PGScrub>(pg, with_priority);
 }
 
-void OSDService::queue_scrub_after_repair(PG* pg, Scrub::scrub_prio_t with_priority)
-{
-  queue_scrub_event_msg_default_cost<PGScrubAfterRepair>(pg, with_priority);
-}
-
 void OSDService::queue_for_rep_scrub(PG* pg,
 				     Scrub::scrub_prio_t with_priority,
 				     unsigned int qu_priority,
@@ -3935,11 +3930,6 @@ int OSD::init()
 
   dout(2) << "superblock: I am osd." << superblock.whoami << dendl;
 
-  if (cct->_conf.get_val<bool>("osd_compact_on_start")) {
-    dout(2) << "compacting object store's DB" << dendl;
-    store->compact();
-  }
-
   // prime osd stats
   {
     struct store_statfs_t stbuf;
@@ -4084,6 +4074,11 @@ int OSD::init()
   osd_lock.lock();
   if (is_stopping())
     return 0;
+
+  if (cct->_conf.get_val<bool>("osd_compact_on_start")) {
+    dout(2) << "compacting object store's DB" << dendl;
+    store->compact();
+  }
 
   // start objecter *after* we have authenticated, so that we don't ignore
   // the OSDMaps it requests.

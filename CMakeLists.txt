@@ -259,6 +259,12 @@ if(WITH_RBD AND LINUX)
   set(HAVE_LIBCRYPTSETUP ${LIBCRYPTSETUP_FOUND})
 endif()
 
+# libnbd
+if(WITH_RBD AND NOT WIN32)
+  find_package(libnbd 1.0 REQUIRED)
+  set(HAVE_LIBNBD ${LIBNBD_FOUND})
+endif()
+
 include(CMakeDependentOption)
 
 CMAKE_DEPENDENT_OPTION(WITH_LIBURING "Enable io_uring bluestore backend" ON
@@ -378,6 +384,15 @@ if(WITH_QATZIP)
   endif()
   set(HAVE_QATZIP TRUE)
 endif(WITH_QATZIP)
+
+CMAKE_DEPENDENT_OPTION(WITH_UADK "Enable UADK" ON
+        "CMAKE_SYSTEM_PROCESSOR MATCHES aarch64" OFF)
+if(WITH_UADK)
+  include(Builduadk)
+  build_uadk()
+  set(HAVE_UADK TRUE)
+  message("HAVE_UADK " ${HAVE_UADK})
+endif(WITH_UADK)
 
 # needs mds and? XXX
 option(WITH_LIBCEPHFS "libcephfs client library" ON)

@@ -727,7 +727,9 @@ public:
 
   virtual int delete_object(const DoutPrefixProvider* dpp,
 			    optional_yield y,
-			    uint32_t flags) override;
+			    uint32_t flags,
+			    std::list<rgw_obj_index_key>* remove_objs,
+			    RGWObjVersionTracker* objv) override;
   virtual int copy_object(const ACLOwner& owner,
                const rgw_user& remote_user,
                req_info* info, const rgw_zone_id& source_zone,
@@ -787,6 +789,18 @@ public:
 				  bool update_object,
 				  const DoutPrefixProvider* dpp,
 				  optional_yield y) override;
+    virtual int restore_obj_from_cloud(Bucket* bucket,
+			   rgw::sal::PlacementTier* tier,
+			   rgw_placement_rule& placement_rule,
+			   rgw_bucket_dir_entry& o,
+			   CephContext* cct,
+		           RGWObjTier& tier_config,
+			   real_time& mtime,
+			   uint64_t olh_epoch,
+		           std::optional<uint64_t> days,
+			   const DoutPrefixProvider* dpp,
+			   optional_yield y,
+		           uint32_t flags) override;
   virtual bool placement_rules_match(rgw_placement_rule& r1, rgw_placement_rule& r2) override;
   virtual int dump_obj_layout(const DoutPrefixProvider *dpp, optional_yield y,
 			      Formatter* f) override;
@@ -842,6 +856,8 @@ public:
 
   virtual int get_torrent_info(const DoutPrefixProvider* dpp,
                                optional_yield y, bufferlist& bl) override;
+
+  virtual RGWObjVersionTracker& get_version_tracker() override { return next->get_version_tracker(); }
 
   virtual int omap_get_vals_by_keys(const DoutPrefixProvider *dpp,
 				    const std::string& oid,
@@ -920,7 +936,13 @@ public:
 		       RGWCompressionInfo& cs_info, off_t& ofs,
 		       std::string& tag, ACLOwner& owner,
 		       uint64_t olh_epoch,
-		       rgw::sal::Object* target_obj) override;
+		       rgw::sal::Object* target_obj,
+		       prefix_map_t& processed_prefixes) override;
+  virtual int cleanup_orphaned_parts(const DoutPrefixProvider *dpp,
+                                     CephContext *cct, optional_yield y,
+                                     const rgw_obj& obj,
+                                     std::list<rgw_obj_index_key>& remove_objs,
+                                     prefix_map_t& processed_prefixes) override;
 
   virtual int get_info(const DoutPrefixProvider *dpp, optional_yield y,
 		       rgw_placement_rule** rule,
@@ -969,52 +991,28 @@ protected:
   std::unique_ptr<Lifecycle> next;
 
 public:
-  struct FilterLCHead : LCHead {
-    std::unique_ptr<LCHead> next;
-
-    FilterLCHead(std::unique_ptr<LCHead> _next) : next(std::move(_next)) {}
-    virtual ~FilterLCHead() = default;
-
-    virtual time_t& get_start_date() override { return next->get_start_date(); }
-    virtual void set_start_date(time_t t) override { next->set_start_date(t); }
-    virtual std::string& get_marker() override { return next->get_marker(); }
-    virtual void set_marker(const std::string& m) override { next->set_marker(m); }
-    virtual time_t& get_shard_rollover_date() override { return next->get_shard_rollover_date(); }
-    virtual void set_shard_rollover_date(time_t t) override { next->set_shard_rollover_date(t); }
-  };
-
-  struct FilterLCEntry : LCEntry {
-    std::unique_ptr<LCEntry> next;
-
-    FilterLCEntry(std::unique_ptr<LCEntry> _next) : next(std::move(_next)) {}
-    virtual ~FilterLCEntry() = default;
-
-    virtual std::string& get_bucket() override { return next->get_bucket(); }
-    virtual void set_bucket(const std::string& b) override { next->set_bucket(b); }
-    virtual std::string& get_oid() override { return next->get_oid(); }
-    virtual void set_oid(const std::string& o) override { next->set_oid(o); }
-    virtual uint64_t get_start_time() override { return next->get_start_time(); }
-    virtual void set_start_time(uint64_t t) override { next->set_start_time(t); }
-    virtual uint32_t get_status() override { return next->get_status(); }
-    virtual void set_status(uint32_t s) override { next->set_status(s); }
-    virtual void print(std::ostream& out) const override { return next->print(out); }
-  };
 
   FilterLifecycle(std::unique_ptr<Lifecycle> _next) : next(std::move(_next)) {}
   virtual ~FilterLifecycle() = default;
 
-  virtual std::unique_ptr<LCEntry> get_entry() override;
-  virtual int get_entry(const std::string& oid, const std::string& marker,
-			std::unique_ptr<LCEntry>* entry) override;
-  virtual int get_next_entry(const std::string& oid, const std::string& marker,
-			     std::unique_ptr<LCEntry>* entry) override;
-  virtual int set_entry(const std::string& oid, LCEntry& entry) override;
-  virtual int list_entries(const std::string& oid, const std::string& marker,
+  virtual int get_entry(const DoutPrefixProvider* dpp, optional_yield y,
+                        const std::string& oid, const std::string& marker,
+			LCEntry& entry) override;
+  virtual int get_next_entry(const DoutPrefixProvider* dpp, optional_yield y,
+                             const std::string& oid, const std::string& marker,
+			     LCEntry& entry) override;
+  virtual int set_entry(const DoutPrefixProvider* dpp, optional_yield y,
+                        const std::string& oid, const LCEntry& entry) override;
+  virtual int list_entries(const DoutPrefixProvider* dpp, optional_yield y,
+                           const std::string& oid, const std::string& marker,
 			   uint32_t max_entries,
-			   std::vector<std::unique_ptr<LCEntry>>& entries) override;
-  virtual int rm_entry(const std::string& oid, LCEntry& entry) override;
-  virtual int get_head(const std::string& oid, std::unique_ptr<LCHead>* head) override;
-  virtual int put_head(const std::string& oid, LCHead& head) override;
+			   std::vector<LCEntry>& entries) override;
+  virtual int rm_entry(const DoutPrefixProvider* dpp, optional_yield y,
+                       const std::string& oid, const LCEntry& entry) override;
+  virtual int get_head(const DoutPrefixProvider* dpp, optional_yield y,
+                       const std::string& oid, LCHead& head) override;
+  virtual int put_head(const DoutPrefixProvider* dpp, optional_yield y,
+                       const std::string& oid, const LCHead& head) override;
   virtual std::unique_ptr<LCSerializer> get_serializer(const std::string& lock_name,
 						       const std::string& oid,
 						       const std::string& cookie) override;

@@ -179,13 +179,6 @@ public:
   /// and be removed only in the PrimaryLogPG destructor.
   std::unique_ptr<ScrubPgIF> m_scrubber;
 
-  /// flags detailing scheduling/operation characteristics of the next scrub 
-  requested_scrub_t m_planned_scrub;
-
-  const requested_scrub_t& get_planned_scrub() const {
-    return m_planned_scrub;
-  }
-
   /// scrubbing state for both Primary & replicas
   bool is_scrub_active() const { return m_scrubber->is_scrub_active(); }
 
@@ -425,19 +418,6 @@ public:
     forward_scrub_event(&ScrubPgIF::initiate_regular_scrub, queued, "StartScrub");
   }
 
-  /**
-   *  a special version of PG::scrub(), which:
-   *  - is initiated after repair, and
-   * (not true anymore:)
-   *  - is not required to allocate local/remote OSD scrub resources
-   */
-  void recovery_scrub(epoch_t queued, ThreadPool::TPHandle& handle)
-  {
-    // a new scrub
-    forward_scrub_event(&ScrubPgIF::initiate_scrub_after_repair, queued,
-			"AfterRepairScrub");
-  }
-
   void replica_scrub(epoch_t queued,
 		     Scrub::act_token_t act_token,
 		     ThreadPool::TPHandle& handle);
@@ -625,6 +605,7 @@ public:
 
   void on_backfill_reserved() override;
   void on_backfill_canceled() override;
+  void on_recovery_cancelled() override {}
   void on_recovery_reserved() override;
 
   bool is_forced_recovery_or_backfill() const {
@@ -698,10 +679,8 @@ public:
   void shutdown();
   virtual void on_shutdown() = 0;
 
-  bool get_must_scrub() const;
-
   Scrub::schedule_result_t start_scrubbing(
-    std::unique_ptr<Scrub::ScrubJob> candidate,
+    const Scrub::SchedEntry& candidate,
     Scrub::OSDRestrictions osd_restrictions);
 
   unsigned int scrub_requeue_priority(
@@ -1219,8 +1198,6 @@ public:
 
   // -- scrub --
 protected:
-  bool scrub_after_recovery;
-
   int active_pushes;
 
   [[nodiscard]] bool ops_blocked_by_scrub() const;
@@ -1354,7 +1331,6 @@ protected:
   virtual void snap_trimmer_scrub_complete() = 0;
 
   void queue_recovery();
-  void queue_scrub_after_repair();
   unsigned int get_scrub_priority();
 
   bool try_flush_or_schedule_async() override;
@@ -1404,11 +1380,6 @@ public:
  const pg_info_t& get_pg_info(ScrubberPasskey) const final { return info; }
 
  OSDService* get_pg_osd(ScrubberPasskey) const { return osd; }
-
- requested_scrub_t& get_planned_scrub(ScrubberPasskey)
- {
-   return m_planned_scrub;
- }
 
  void force_object_missing(ScrubberPasskey,
                            const std::set<pg_shard_t>& peer,

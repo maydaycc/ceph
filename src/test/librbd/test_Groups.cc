@@ -5,12 +5,15 @@
 #include "test/librbd/test_support.h"
 #include "include/rbd/librbd.h"
 #include "include/rbd/librbd.hpp"
+#include "librbd/api/Group.h"
 #include "test/librados/test.h"
 #include "gtest/gtest.h"
 
 #include <boost/scope_exit.hpp>
 #include <chrono>
 #include <vector>
+#include <set>
+#include <algorithm>
 
 void register_test_groups() {
 }
@@ -505,8 +508,6 @@ TEST_F(TestGroup, snap_get_info)
 
   const char *gp_name = "gp_snapgetinfo";
   ASSERT_EQ(0, rbd_group_create(ioctx2, gp_name));
-  ASSERT_EQ(0, rbd_group_image_add(ioctx2, gp_name, ioctx,
-                                   m_image_name.c_str()));
 
   const char *gp_snap_name = "snap_snapshot";
   ASSERT_EQ(0, rbd_group_snap_create(ioctx2, gp_name, gp_snap_name));
@@ -521,6 +522,22 @@ TEST_F(TestGroup, snap_get_info)
                                        &gp_snap_info));
   ASSERT_STREQ(gp_snap_name, gp_snap_info.name);
   ASSERT_EQ(RBD_GROUP_SNAP_STATE_COMPLETE, gp_snap_info.state);
+  ASSERT_EQ(RBD_GROUP_SNAP_NAMESPACE_TYPE_USER, gp_snap_info.namespace_type);
+  ASSERT_STREQ("", gp_snap_info.image_snap_name);
+  ASSERT_EQ(0U, gp_snap_info.image_snaps_count);
+
+  rbd_group_snap_get_info_cleanup(&gp_snap_info);
+  ASSERT_EQ(0, rbd_group_snap_remove(ioctx2, gp_name, gp_snap_name));
+
+  ASSERT_EQ(0, rbd_group_image_add(ioctx2, gp_name, ioctx,
+                                   m_image_name.c_str()));
+  ASSERT_EQ(0, rbd_group_snap_create(ioctx2, gp_name, gp_snap_name));
+
+  ASSERT_EQ(0, rbd_group_snap_get_info(ioctx2, gp_name, gp_snap_name,
+                                       &gp_snap_info));
+  ASSERT_STREQ(gp_snap_name, gp_snap_info.name);
+  ASSERT_EQ(RBD_GROUP_SNAP_STATE_COMPLETE, gp_snap_info.state);
+  ASSERT_EQ(RBD_GROUP_SNAP_NAMESPACE_TYPE_USER, gp_snap_info.namespace_type);
   ASSERT_EQ(1U, gp_snap_info.image_snaps_count);
   ASSERT_EQ(m_image_name, gp_snap_info.image_snaps[0].image_name);
   ASSERT_EQ(rados_ioctx_get_id(ioctx), gp_snap_info.image_snaps[0].pool_id);
@@ -545,8 +562,6 @@ TEST_F(TestGroup, snap_get_infoPP)
 
   const char *gp_name = "gp_snapgetinfoPP";
   ASSERT_EQ(0, m_rbd.group_create(ioctx2, gp_name));
-  ASSERT_EQ(0, m_rbd.group_image_add(ioctx2, gp_name, m_ioctx,
-                                     m_image_name.c_str()));
 
   const char *gp_snap_name = "snap_snapshot";
   ASSERT_EQ(0, m_rbd.group_snap_create(ioctx2, gp_name, gp_snap_name));
@@ -561,6 +576,21 @@ TEST_F(TestGroup, snap_get_infoPP)
                                          &gp_snap_info));
   ASSERT_EQ(gp_snap_name, gp_snap_info.name);
   ASSERT_EQ(RBD_GROUP_SNAP_STATE_COMPLETE, gp_snap_info.state);
+  ASSERT_EQ(RBD_GROUP_SNAP_NAMESPACE_TYPE_USER, gp_snap_info.namespace_type);
+  ASSERT_EQ("", gp_snap_info.image_snap_name);
+  ASSERT_EQ(0U, gp_snap_info.image_snaps.size());
+
+  ASSERT_EQ(0, m_rbd.group_snap_remove(ioctx2, gp_name, gp_snap_name));
+
+  ASSERT_EQ(0, m_rbd.group_image_add(ioctx2, gp_name, m_ioctx,
+                                     m_image_name.c_str()));
+  ASSERT_EQ(0, m_rbd.group_snap_create(ioctx2, gp_name, gp_snap_name));
+
+  ASSERT_EQ(0, m_rbd.group_snap_get_info(ioctx2, gp_name, gp_snap_name,
+                                         &gp_snap_info));
+  ASSERT_EQ(gp_snap_name, gp_snap_info.name);
+  ASSERT_EQ(RBD_GROUP_SNAP_STATE_COMPLETE, gp_snap_info.state);
+  ASSERT_EQ(RBD_GROUP_SNAP_NAMESPACE_TYPE_USER, gp_snap_info.namespace_type);
   ASSERT_EQ(1U, gp_snap_info.image_snaps.size());
   ASSERT_EQ(m_image_name, gp_snap_info.image_snaps[0].image_name);
   ASSERT_EQ(m_ioctx.get_id(), gp_snap_info.image_snaps[0].pool_id);
@@ -626,6 +656,7 @@ TEST_F(TestGroup, snap_list2)
 
   for (int i = 0; i < 4; i++) {
     ASSERT_EQ(RBD_GROUP_SNAP_STATE_COMPLETE, gp_snaps[i].state);
+    ASSERT_EQ(RBD_GROUP_SNAP_NAMESPACE_TYPE_USER, gp_snaps[i].namespace_type);
     if (!strcmp(gp_snaps[i].name, gp_snap_names[0])) {
       ASSERT_EQ(0U, gp_snaps[i].image_snaps_count);
     } else if (!strcmp(gp_snaps[i].name, gp_snap_names[1])) {
@@ -713,6 +744,7 @@ TEST_F(TestGroup, snap_list2PP)
 
   for (const auto& gp_snap : gp_snaps) {
     ASSERT_EQ(RBD_GROUP_SNAP_STATE_COMPLETE, gp_snap.state);
+    ASSERT_EQ(RBD_GROUP_SNAP_NAMESPACE_TYPE_USER, gp_snap.namespace_type);
     if (gp_snap.name == gp_snap_names[0]) {
       ASSERT_EQ(0U, gp_snap.image_snaps.size());
     } else if (gp_snap.name == gp_snap_names[1]) {
@@ -748,4 +780,103 @@ TEST_F(TestGroup, snap_list2PP)
   ASSERT_EQ(0U, gp_snaps2.size());
   ASSERT_EQ(0, m_rbd.group_remove(m_ioctx, gp_name));
   ASSERT_EQ(0, _rados.pool_delete(pool_name2.c_str()));
+}
+
+TEST_F(TestGroup, snap_list_internal)
+{
+  REQUIRE_FORMAT_V2();
+
+  // Check that the listing works with different
+  // values for try_to_sort and fail_if_not_sorted
+
+  librados::IoCtx ioctx;
+  ASSERT_EQ(0, _rados.ioctx_create(_pool_name.c_str(), ioctx));
+
+  const char *group_name = "gp_snaplist_internalPP";
+
+  librbd::RBD rbd;
+  ASSERT_EQ(0, rbd.group_create(ioctx, group_name));
+
+  std::vector<librbd::group_snap_info2_t> gp_snaps;
+
+  // No snaps present
+  ASSERT_EQ(0, librbd::api::Group<>::snap_list(ioctx, group_name, true, true,
+                                               &gp_snaps));
+  ASSERT_EQ(0U, gp_snaps.size());
+
+  ASSERT_EQ(0, librbd::api::Group<>::snap_list(ioctx, group_name, false, false,
+                                               &gp_snaps));
+  ASSERT_EQ(0U, gp_snaps.size());
+
+  // Create a stale snap_order key by deleting the snapshot_ key
+  ASSERT_EQ(0, librbd::api::Group<>::snap_create(ioctx, group_name,
+                                                 "test-snap", 0));
+  ASSERT_EQ(0, librbd::api::Group<>::snap_list(ioctx, group_name, false, false,
+                                               &gp_snaps));
+  ASSERT_EQ(1U, gp_snaps.size());
+
+  std::string group_id;
+  ASSERT_EQ(0, librbd::api::Group<>::get_id(ioctx, group_name, &group_id));
+
+  std::string group_header = RBD_GROUP_HEADER_PREFIX + group_id;
+  std::set<std::string> keys = {"snapshot_" + gp_snaps[0].id};
+  ASSERT_EQ(0, ioctx.omap_rm_keys(group_header, keys));
+
+  for (int i = 0; i < 20; i++) {
+    std::string name = "snap" + stringify(i);
+    ASSERT_EQ(0, librbd::api::Group<>::snap_create(ioctx, group_name,
+                                                   name.c_str(), 0));
+  }
+
+  ASSERT_EQ(0, librbd::api::Group<>::snap_list(ioctx, group_name, true, true,
+                                               &gp_snaps));
+  ASSERT_EQ(20U, gp_snaps.size());
+
+  // Verify that the sorted list is correct
+  for (size_t i = 0; i < gp_snaps.size(); i++){
+    std::string name = "snap" + stringify(i);
+    ASSERT_EQ(name, gp_snaps[i].name);
+  }
+
+  // Sort on group snap ids to simulate the unsorted list.
+  std::vector<librbd::group_snap_info2_t> snaps_sorted_by_id = gp_snaps;
+  std::sort(snaps_sorted_by_id.begin(), snaps_sorted_by_id.end(),
+            [](const librbd::group_snap_info2_t &a,
+	       const librbd::group_snap_info2_t &b) {
+	      return a.id < b.id;
+	    });
+
+  // Check that the vectors actually differ
+  bool differ = false;
+  for (size_t i = 0; i < gp_snaps.size(); i++) {
+    if (gp_snaps[i].id != snaps_sorted_by_id[i].id) {
+      differ = true;
+      break;
+    }
+  }
+  ASSERT_TRUE(differ);
+
+  // Remove the snap_order key for one of the snaps.
+  keys = {"snap_order_" + gp_snaps[1].id};
+  ASSERT_EQ(0, ioctx.omap_rm_keys(group_header, keys));
+
+  //This should fail.
+  ASSERT_EQ(-EINVAL, librbd::api::Group<>::snap_list(ioctx, group_name, true,
+                                                     true, &gp_snaps));
+
+  // Should work if fail_if_not_sorted is false
+  ASSERT_EQ(0, librbd::api::Group<>::snap_list(ioctx, group_name, true, false,
+                                               &gp_snaps));
+  ASSERT_EQ(20U, gp_snaps.size());
+
+  ASSERT_EQ(0, librbd::api::Group<>::snap_list(ioctx, group_name, false, false,
+                                               &gp_snaps));
+  ASSERT_EQ(20U, gp_snaps.size());
+
+  //Compare unsorted listing
+  for (size_t i = 0; i < gp_snaps.size(); i++){
+    ASSERT_EQ(snaps_sorted_by_id[i].id, gp_snaps[i].id);
+  }
+
+  ASSERT_EQ(0, rbd.group_remove(ioctx, group_name));
 }

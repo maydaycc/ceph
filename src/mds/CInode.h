@@ -305,6 +305,7 @@ class CInode : public MDSCacheObject, public InodeStoreBase, public Counter<CIno
 
     bool last_scrub_dirty = false; /// are our stamps dirty with respect to disk state?
     bool scrub_in_progress = false; /// are we currently scrubbing?
+    bool uninline_in_progress = false; /// are we currently uninlining?
 
     fragset_t queued_frags;
 
@@ -437,7 +438,7 @@ class CInode : public MDSCacheObject, public InodeStoreBase, public Counter<CIno
   }
 
   bool scrub_is_in_progress() const {
-    return (scrub_infop && scrub_infop->scrub_in_progress);
+    return (scrub_infop && (scrub_infop->scrub_in_progress || scrub_infop->uninline_in_progress));
   }
   /**
    * Start scrubbing on this inode. That could be very short if it's
@@ -448,6 +449,7 @@ class CInode : public MDSCacheObject, public InodeStoreBase, public Counter<CIno
    * directory's get_projected_version())
    */
   void scrub_initialize(ScrubHeaderRef& header);
+  void uninline_initialize();
   /**
    * Call this once the scrub has been completed, whether it's a full
    * recursive scrub on a directory or simply the data on a file (or
@@ -456,6 +458,8 @@ class CInode : public MDSCacheObject, public InodeStoreBase, public Counter<CIno
    * be complete()ed.
    */
   void scrub_finished();
+  void uninline_finished();
+  void common_finished();
 
   void scrub_aborted();
 
@@ -750,8 +754,9 @@ class CInode : public MDSCacheObject, public InodeStoreBase, public Counter<CIno
                    inode_backtrace_t &bt);
   void build_backtrace(int64_t pool, inode_backtrace_t& bt);
   void _store_backtrace(std::vector<CInodeCommitOperation> &ops_vec,
-                        inode_backtrace_t &bt, int op_prio);
-  void store_backtrace(CInodeCommitOperations &op, int op_prio);
+                        inode_backtrace_t &bt, int op_prio, bool ignore_old_pools);
+  void store_backtrace(CInodeCommitOperations &op, int op_prio,
+		       bool ignore_old_pools=false);
   void store_backtrace(MDSContext *fin, int op_prio=-1);
   void _stored_backtrace(int r, version_t v, Context *fin);
   void fetch_backtrace(Context *fin, ceph::buffer::list *backtrace);
@@ -1058,6 +1063,15 @@ class CInode : public MDSCacheObject, public InodeStoreBase, public Counter<CIno
                            MDSContext *fin);
   static void dump_validation_results(const validated_data& results,
                                       ceph::Formatter *f);
+  bool has_inline_data() {
+    if (is_normal() && is_file()) {
+      auto pin = get_projected_inode();
+      if (pin->inline_data.version != CEPH_INLINE_NONE) {
+	return true;
+      }
+    }
+    return false;
+  }
 
   //bool hack_accessed = false;
   //utime_t hack_load_stamp;
@@ -1129,6 +1143,14 @@ class CInode : public MDSCacheObject, public InodeStoreBase, public Counter<CIno
   // client caps
   client_t loner_cap = -1, want_loner_cap = -1;
 
+  /**
+   * Return the pool ID where we currently write backtraces for
+   * this inode (in addition to inode.old_pools)
+   *
+   * @returns a pool ID >=0
+   */
+  int64_t get_backtrace_pool() const;
+
 protected:
   ceph_lock_state_t *get_fcntl_lock_state() {
     if (!fcntl_locks)
@@ -1178,14 +1200,6 @@ protected:
     else
       clear_flock_lock_state();
   }
-
-  /**
-   * Return the pool ID where we currently write backtraces for
-   * this inode (in addition to inode.old_pools)
-   *
-   * @returns a pool ID >=0
-   */
-  int64_t get_backtrace_pool() const;
 
   // parent dentries in cache
   CDentry         *parent = nullptr;             // primary link

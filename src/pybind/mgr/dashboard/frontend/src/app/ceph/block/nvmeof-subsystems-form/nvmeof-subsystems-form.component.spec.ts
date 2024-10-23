@@ -11,7 +11,7 @@ import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
 import { SharedModule } from '~/app/shared/shared.module';
 import { NvmeofSubsystemsFormComponent } from './nvmeof-subsystems-form.component';
 import { FormHelper } from '~/testing/unit-test-helper';
-import { NvmeofService } from '~/app/shared/api/nvmeof.service';
+import { MAX_NAMESPACE, NvmeofService } from '~/app/shared/api/nvmeof.service';
 
 describe('NvmeofSubsystemsFormComponent', () => {
   let component: NvmeofSubsystemsFormComponent;
@@ -20,6 +20,7 @@ describe('NvmeofSubsystemsFormComponent', () => {
   let form: CdFormGroup;
   let formHelper: FormHelper;
   const mockTimestamp = 1720693470789;
+  const mockGroupName = 'default';
 
   beforeEach(async () => {
     spyOn(Date, 'now').and.returnValue(mockTimestamp);
@@ -42,6 +43,7 @@ describe('NvmeofSubsystemsFormComponent', () => {
     form = component.subsystemForm;
     formHelper = new FormHelper(form);
     fixture.detectChanges();
+    component.group = mockGroupName;
   });
 
   it('should create', () => {
@@ -59,8 +61,9 @@ describe('NvmeofSubsystemsFormComponent', () => {
       component.onSubmit();
       expect(nvmeofService.createSubsystem).toHaveBeenCalledWith({
         nqn: expectedNqn,
-        max_namespaces: 256,
-        enable_ha: true
+        max_namespaces: MAX_NAMESPACE,
+        enable_ha: true,
+        gw_group: mockGroupName
       });
     });
 
@@ -76,8 +79,8 @@ describe('NvmeofSubsystemsFormComponent', () => {
       formHelper.expectError('max_namespaces', 'pattern');
     });
 
-    it('should give error on max_namespaces greater than 256', () => {
-      formHelper.setValue('max_namespaces', 300);
+    it(`should give error on max_namespaces greater than ${MAX_NAMESPACE}`, () => {
+      formHelper.setValue('max_namespaces', 2000);
       component.onSubmit();
       formHelper.expectError('max_namespaces', 'max');
     });

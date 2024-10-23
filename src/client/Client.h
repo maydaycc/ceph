@@ -1057,11 +1057,10 @@ protected:
   // helpers
   void wake_up_session_caps(MetaSession *s, bool reconnect);
 
-  void add_nonblocking_onfinish_to_context_list(std::list<Context*>& ls, Context *onfinish) {
-    ls.push_back(onfinish);
+  void wait_on_context_list(std::vector<Context*>& ls);
+  void signal_context_list(std::vector<Context*>& ls) {
+    finish_contexts(cct, ls, 0);
   }
-  void wait_on_context_list(std::list<Context*>& ls);
-  void signal_context_list(std::list<Context*>& ls);
   void signal_caps_inode(Inode *in);
 
   // -- metadata cache stuff
@@ -1406,6 +1405,21 @@ private:
     Inode *in;
     uint64_t off;
     uint64_t len;
+
+    void finish(int r) override;
+  };
+
+  // A wrapper callback which takes the 'client_lock' and finishes the context.
+  // One of the usecase is the filer->write_trunc which doesn't hold client_lock
+  // in the call back passed. So, use this wrapper in such cases.
+  class C_Lock_Client_Finisher : public Context {
+  public:
+    C_Lock_Client_Finisher(Client *clnt, Context *onfinish)
+      : clnt(clnt), onfinish(onfinish) {}
+
+  private:
+    Client *clnt;
+    Context *onfinish;
 
     void finish(int r) override;
   };

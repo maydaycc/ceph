@@ -376,7 +376,7 @@ def module_setup(ctx, config):
            cluster_name,
            'mgr',
            'module',
-           'emable',
+           'enable',
            m,
         ]
         log.info("enabling module %s", m)
@@ -414,6 +414,15 @@ def conf_setup(ctx, config):
     for p in procs:
         log.debug("waiting for %s", p)
         p.wait()
+    cmd = [
+        'sudo',
+        'ceph',
+        '--cluster',
+        cluster_name,
+        'config',
+        'dump',
+    ]
+    mon_remote.run(args=cmd)
     yield
 
 @contextlib.contextmanager

@@ -795,6 +795,19 @@ options:
   level: advanced
   desc: Set QAT busy bolling to reduce latency at the cost of potentially increasing CPU usage
   default: false
+- name: uadk_compressor_enabled
+  type: bool
+  level: advanced
+  desc: Enable UADK acceleration support for compression if available
+  default: false
+  with_legacy: true
+- name: uadk_wd_sync_ctx_num
+  type: int
+  level: advanced
+  desc: Set the number of instances in the queue
+  default: 2
+  min: 2
+  max: 1024
 - name: plugin_crypto_accelerator
   type: str
   level: advanced
@@ -3691,12 +3704,9 @@ options:
 - name: osd_requested_scrub_priority
   type: uint
   level: advanced
-  default: 120
-  fmt_desc: The priority set for user requested scrub on the work queue.  If
-    this value were to be smaller than ``osd_client_op_priority`` it
-    can be boosted to the value of ``osd_client_op_priority`` when
-    scrub is blocking client operations.
-  with_legacy: true
+  default: 5
+  fmt_desc: deprecated.  Use ``osd_scrub_priority`` instead.
+  with_legacy: false
 - name: osd_recovery_priority
   type: uint
   level: advanced
@@ -5041,6 +5051,29 @@ options:
   default: true
   flags:
   - create
+  with_legacy: false
+- name: bluestore_write_v2
+  type: bool
+  level: advanced
+  desc: Use faster write path
+  long_desc: Original write path was developed over long time by constantly adding features.
+    The price was layered inefficiencies gained along the way.
+    Rework of write path done from scratch clears it and optimizes for typical cases.
+    Write_v2 is necessary for recompression feature.
+  default: false
+  flags:
+  - startup
+  with_legacy: false
+- name: bluestore_write_v2_random
+  type: bool
+  level: advanced
+  desc: Random selection of write path mode
+  long_desc: For testing purposes. If true, value of bluestore_write_v2 is randomly selected.
+  default: false
+  see_also:
+  - bluestore_write_v2
+  flags:
+  - startup
   with_legacy: false
 - name: bluestore_allocator
   type: str

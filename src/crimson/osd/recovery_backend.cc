@@ -3,6 +3,7 @@
 
 #include <fmt/format.h>
 
+#include "crimson/common/coroutine.h"
 #include "crimson/common/exception.h"
 #include "crimson/osd/recovery_backend.h"
 #include "crimson/osd/pg.h"
@@ -167,8 +168,8 @@ RecoveryBackend::handle_backfill_finish_ack(
   logger().debug("{}", __func__);
   ceph_assert(pg.is_primary());
   ceph_assert(crimson::common::local_conf()->osd_kill_backfill_at != 3);
-  // TODO:
-  // finish_recovery_op(hobject_t::get_max());
+  auto recovery_handler = pg.get_recovery_handler();
+  recovery_handler->backfill_target_finished();
   return seastar::now();
 }
 
@@ -206,12 +207,14 @@ RecoveryBackend::handle_backfill_remove(
   ObjectStore::Transaction t;
   for ([[maybe_unused]] const auto& [soid, ver] : m.ls) {
     // TODO: the reserved space management. PG::try_reserve_recovery_space().
-    t.remove(pg.get_collection_ref()->get_cid(),
-	      ghobject_t(soid, ghobject_t::NO_GEN, pg.get_pg_whoami().shard));
+    co_await interruptor::async([this, soid=soid, &t] {
+      pg.remove_maybe_snapmapped_object(t, soid);
+    });
   }
   logger().debug("RecoveryBackend::handle_backfill_remove: do_transaction...");
-  return shard_services.get_store().do_transaction(
-    pg.get_collection_ref(), std::move(t)).or_terminate();
+  co_await interruptor::make_interruptible(
+    shard_services.get_store().do_transaction(
+      pg.get_collection_ref(), std::move(t)).or_terminate());
 }
 
 RecoveryBackend::interruptible_future<BackfillInterval>
@@ -264,8 +267,9 @@ RecoveryBackend::scan_for_backfill(
       bi.end = std::move(next);
       bi.version = pg.get_info().last_update;
       bi.objects = std::move(*version_map);
-      logger().debug("{} BackfillInterval filled, leaving",
-                     "scan_for_backfill");
+      logger().debug("{} BackfillInterval filled, leaving, {}",
+                     "scan_for_backfill",
+		     bi);
       return seastar::make_ready_future<BackfillInterval>(std::move(bi));
     });
   });
@@ -370,6 +374,6 @@ RecoveryBackend::handle_recovery_op(
   default:
     return seastar::make_exception_future<>(
 	std::invalid_argument(fmt::format("invalid request type: {}",
-					  m->get_header().type)));
+					  (uint16_t)m->get_header().type)));
   }
 }

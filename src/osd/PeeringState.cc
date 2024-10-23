@@ -3033,7 +3033,9 @@ void PeeringState::proc_primary_info(
   ceph_assert(!is_primary());
 
   update_history(oinfo.history);
-  if (!info.stats.stats_invalid && info.stats.stats.sum.num_scrub_errors) {
+  bool has_scrub_error = (!info.stats.stats_invalid && info.stats.stats.sum.num_scrub_errors);
+  info.stats = oinfo.stats;
+  if (has_scrub_error) {
     info.stats.stats.sum.num_scrub_errors = 0;
     info.stats.stats.sum.num_shallow_scrub_errors = 0;
     info.stats.stats.sum.num_deep_scrub_errors = 0;
@@ -5827,6 +5829,7 @@ PeeringState::Recovering::react(const DeferRecovery &evt)
   ps->state_set(PG_STATE_RECOVERY_WAIT);
   pl->cancel_local_background_io_reservation();
   release_reservations(true);
+  pl->on_recovery_cancelled();
   pl->schedule_event_after(
     std::make_shared<PGPeeringEvent>(
       ps->get_osdmap_epoch(),
@@ -5844,6 +5847,7 @@ PeeringState::Recovering::react(const UnfoundRecovery &evt)
   ps->state_set(PG_STATE_RECOVERY_UNFOUND);
   pl->cancel_local_background_io_reservation();
   release_reservations(true);
+  pl->on_recovery_cancelled();
   return transit<NotRecovering>();
 }
 

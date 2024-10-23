@@ -163,9 +163,6 @@ MEV(RemotesReserved)
 /// initiate a new scrubbing session (relevant if we are a Primary)
 MEV(StartScrub)
 
-/// initiate a new scrubbing session. Only triggered at Recovery completion
-MEV(AfterRepairScrub)
-
 /// triggered when the PG unblocked an object that was marked for scrubbing.
 /// Via the PGScrubUnblocked op
 MEV(Unblocked)
@@ -472,11 +469,8 @@ struct PrimaryIdle;
  *  The basic state for an active Primary. Ready to accept a new scrub request.
  *  State managed here: being in the OSD's scrub queue (unless when scrubbing).
  *
- *  Scrubbing is triggered by one of the following events:
- *  - (standard scenario for a Primary): 'StartScrub'. Initiates the OSDs
- *    resources reservation process. Will be issued by PG::scrub(), following a
- *    queued "PGScrub" op.
- *  - a special end-of-recovery Primary scrub event ('AfterRepairScrub').
+ *  Scrubbing is triggered by a 'StartScrub' event, which is issued by
+ *  PG::scrub(), following a queued "PGScrub" op.
  */
 struct PrimaryActive : sc::state<PrimaryActive, ScrubMachine, PrimaryIdle>,
 			 NamedSimply {
@@ -517,13 +511,10 @@ struct PrimaryIdle : sc::state<PrimaryIdle, PrimaryActive>, NamedSimply {
 
   using reactions = mpl::list<
       sc::custom_reaction<StartScrub>,
-      // a scrubbing that was initiated at recovery completion:
-      sc::custom_reaction<AfterRepairScrub>,
       // undoing set_op_params(), if aborted before starting the scrub:
       sc::in_state_reaction<FullReset, PrimaryIdle, &PrimaryIdle::clear_state>>;
 
   sc::result react(const StartScrub&);
-  sc::result react(const AfterRepairScrub&);
 };
 
 /**
@@ -560,6 +551,10 @@ struct Session : sc::state<Session, PrimaryActive, ReservingReplicas>,
 
   /// the time when the session was initiated
   ScrubTimePoint m_session_started_at{ScrubClock::now()};
+
+  /// abort reason - if known. Determines the delay time imposed on the
+  /// failed scrub target.
+  std::optional<Scrub::delay_cause_t> m_abort_reason{std::nullopt};
 };
 
 struct ReservingReplicas : sc::state<ReservingReplicas, Session>, NamedSimply {

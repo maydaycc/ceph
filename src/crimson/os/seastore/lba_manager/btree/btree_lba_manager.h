@@ -128,7 +128,7 @@ public:
     assert(intermediate_key >= intermediate_base);
     assert((intermediate_key == L_ADDR_NULL)
       == (intermediate_base == L_ADDR_NULL));
-    return intermediate_key - intermediate_base;
+    return intermediate_key.get_byte_distance<extent_len_t>(intermediate_base);
   }
 
   extent_len_t get_intermediate_length() const final {
@@ -173,16 +173,22 @@ public:
     if (!parent_modified()) {
       return;
     }
+    LOG_PREFIX(BtreeLBAMapping::maybe_fix_pos);
     auto &p = static_cast<LBALeafNode&>(*parent);
     p.maybe_fix_mapping_pos(*this);
+    SUBDEBUGT(seastore_lba, "fixed pin {}",
+              ctx.trans, static_cast<LBAMapping&>(*this));
   }
 
   LBAMappingRef refresh_with_pending_parent() final {
+    LOG_PREFIX(BtreeLBAMapping::refresh_with_pending_parent);
     assert(is_parent_valid() && !is_parent_viewable());
     auto &p = static_cast<LBALeafNode&>(*parent);
     auto &viewable_p = static_cast<LBALeafNode&>(
       *p.find_pending_version(ctx.trans, get_key()));
-    return viewable_p.get_mapping(ctx, get_key());
+    auto new_pin = viewable_p.get_mapping(ctx, get_key());
+    SUBDEBUGT(seastore_lba, "new pin {}", ctx.trans, static_cast<LBAMapping&>(*new_pin));
+    return new_pin;
   }
 protected:
   std::unique_ptr<BtreeNodeMapping<laddr_t, paddr_t>> _duplicate(
@@ -465,7 +471,7 @@ public:
 	      : L_ADDR_NULL;
 	    auto remap_offset = remap.offset;
 	    auto remap_len = remap.len;
-	    auto remap_laddr = orig_laddr + remap_offset;
+	    auto remap_laddr = (orig_laddr + remap_offset).checked_to_laddr();
 	    ceph_assert(intermediate_base != L_ADDR_NULL);
 	    ceph_assert(intermediate_key != L_ADDR_NULL);
 	    ceph_assert(remap_len < orig_len);
@@ -476,7 +482,7 @@ public:
 	      " intermediate_base: {}, intermediate_key: {}", t,
 	      remap_laddr, orig_paddr, remap_len,
 	      intermediate_base, intermediate_key);
-	    auto remapped_intermediate_key = intermediate_key + remap_offset;
+	    auto remapped_intermediate_key = (intermediate_key + remap_offset).checked_to_laddr();
 	    alloc_infos.emplace_back(
 	      alloc_mapping_info_t::create_indirect(
 		remap_laddr,
@@ -485,7 +491,7 @@ public:
 	  }
 	  fut = alloc_cloned_mappings(
 	    t,
-	    remaps.front().offset + orig_laddr,
+	    (remaps.front().offset + orig_laddr).checked_to_laddr(),
 	    std::move(alloc_infos)
 	  ).si_then([&orig_mapping](auto imappings) mutable {
 	    std::vector<LBAMappingRef> mappings;
@@ -504,7 +510,7 @@ public:
 	} else { // !orig_mapping->is_indirect()
 	  fut = alloc_extents(
 	    t,
-	    remaps.front().offset + orig_laddr,
+	    (remaps.front().offset + orig_laddr).checked_to_laddr(),
 	    std::move(extents),
 	    EXTENT_DEFAULT_REF_COUNT);
 	}

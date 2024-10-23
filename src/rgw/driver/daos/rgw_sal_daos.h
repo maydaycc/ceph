@@ -596,7 +596,8 @@ class DaosObject : public StoreObject {
   virtual ~DaosObject();
 
   virtual int delete_object(const DoutPrefixProvider* dpp, optional_yield y,
-                            uint32_t flags) override;
+                            uint32_t flags, std::list<rgw_obj_index_key>* remove_objs,
+                            RGWObjVersionTracker* objv) override;
   virtual int copy_object(
       const ACLOwner& owner, const rgw_user& remote_user,
       req_info* info, const rgw_zone_id& source_zone,
@@ -648,6 +649,18 @@ class DaosObject : public StoreObject {
                                   CephContext* cct, bool update_object,
                                   const DoutPrefixProvider* dpp,
                                   optional_yield y) override;
+  virtual int restore_obj_from_cloud(Bucket* bucket,
+			   rgw::sal::PlacementTier* tier,
+			   rgw_placement_rule& placement_rule,
+			   rgw_bucket_dir_entry& o,
+			   CephContext* cct,
+			   RGWObjTier& tier_config,
+			   real_time& mtime,
+			   uint64_t olh_epoch,
+			   std::optional<uint64_t> days,
+			   const DoutPrefixProvider* dpp,
+			   optional_yield y,
+			   uint32_t flags) override;
   virtual bool placement_rules_match(rgw_placement_rule& r1,
                                      rgw_placement_rule& r2) override;
   virtual int dump_obj_layout(const DoutPrefixProvider* dpp, optional_yield y,
@@ -861,7 +874,13 @@ class DaosMultipartUpload : public StoreMultipartUpload {
                        uint64_t& accounted_size, bool& compressed,
                        RGWCompressionInfo& cs_info, off_t& off,
                        std::string& tag, ACLOwner& owner, uint64_t olh_epoch,
-                       rgw::sal::Object* target_obj) override;
+                       rgw::sal::Object* target_obj,
+                       prefix_map_t& processed_prefixes) override;
+  virtual int cleanup_orphaned_parts(const DoutPrefixProvider *dpp,
+      CephContext *cct, optional_yield y,
+      const rgw_obj& obj,
+      std::list<rgw_obj_index_key>& remove_objs,
+      prefix_map_t& processed_prefixes) override;
   virtual int get_info(const DoutPrefixProvider* dpp, optional_yield y,
                        rgw_placement_rule** rule,
                        rgw::sal::Attrs* attrs = nullptr) override;

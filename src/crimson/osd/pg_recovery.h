@@ -17,6 +17,7 @@
 
 namespace crimson::osd {
 class UrgentRecovery;
+class PglogBasedRecovery;
 }
 
 class MOSDPGBackfillRemove;
@@ -32,12 +33,18 @@ public:
 
   interruptible_future<bool> start_recovery_ops(
     RecoveryBackend::RecoveryBlockingEvent::TriggerI&,
+    crimson::osd::PglogBasedRecovery &recover_op,
     size_t max_to_start);
+  void on_activate_complete();
   void on_backfill_reserved();
   void dispatch_backfill_event(
     boost::intrusive_ptr<const boost::statechart::event_base> evt);
+  void backfill_target_finished() {
+    backfill_state->backfill_target_done();
+  }
 
   seastar::future<> stop() { return seastar::now(); }
+  void on_pg_clean();
 private:
   PGRecoveryListener* pg;
   size_t start_primary_recovery_ops(
@@ -94,6 +101,7 @@ private:
   template <class EventT>
   void start_backfill_recovery(
     const EventT& evt);
+  void backfill_cancelled();
   void request_replica_scan(
     const pg_shard_t& target,
     const hobject_t& begin,
@@ -102,7 +110,8 @@ private:
     const hobject_t& begin) final;
   void enqueue_push(
     const hobject_t& obj,
-    const eversion_t& v) final;
+    const eversion_t& v,
+    const std::vector<pg_shard_t> &peers) final;
   void enqueue_drop(
     const pg_shard_t& target,
     const hobject_t& obj,

@@ -54,6 +54,7 @@
 #include "common/pretty_binary.h"
 #include "common/WorkQueue.h"
 #include "kv/KeyValueHistogram.h"
+#include "Writer.h"
 
 #if defined(WITH_LTTNG)
 #define TRACEPOINT_DEFINE
@@ -142,9 +143,6 @@ const vector<uint64_t> bdev_label_positions = {
   10*_1G,
   100*_1G,
   1000*_1G};
-
-#define OBJECT_MAX_SIZE 0xffffffff // 32 bits
-
 
 /*
  * extent map blob encoding
@@ -4302,6 +4300,42 @@ BlueStore::extent_map_t::const_iterator BlueStore::ExtentMap::seek_lextent(
   return fp;
 }
 
+// Split extent at desired offset.
+// Returns iterator to the right part.
+BlueStore::extent_map_t::iterator BlueStore::ExtentMap::split_at(
+  BlueStore::extent_map_t::iterator p, uint32_t offset)
+{
+  ceph_assert(p != extent_map.end());
+  ceph_assert(p->logical_offset < offset);
+  ceph_assert(offset < p->logical_end());
+  add(offset, p->blob_offset + (offset - p->logical_offset),
+      p->logical_end() - offset, p->blob);
+  p->length = offset - p->logical_offset;
+  ++p;
+  return p;
+}
+
+// If inside extent split it, and return right part.
+// If not inside extent return extent on right.
+BlueStore::extent_map_t::iterator BlueStore::ExtentMap::maybe_split_at(uint32_t offset)
+{
+  auto p = seek_lextent(offset);
+  if (p != extent_map.end()) {
+    if (p->logical_offset < offset && offset < p->logical_end()) {
+      // need to split
+      add(offset, p->blob_offset + (offset - p->logical_offset),
+          p->logical_end() - offset, p->blob);
+      p->length = offset - p->logical_offset;
+      ++p;
+      // check that we moved to proper extent
+      ceph_assert(p->logical_offset == offset);
+    } else {
+      // the extent is either outside offset or exactly at
+    }
+  }
+  return p;
+}
+
 bool BlueStore::ExtentMap::has_any_lextents(uint64_t offset, uint64_t length)
 {
   auto fp = seek_lextent(offset);
@@ -6222,6 +6256,9 @@ void BlueStore::_init_logger()
 
   // write op stats
   //****************************************
+  b.add_time_avg(l_bluestore_write_lat, "write_lat",
+	    "write_op average execution time",
+	    "aw", PerfCountersBuilder::PRIO_USEFUL);
   b.add_u64_counter(l_bluestore_write_big, "write_big",
 		    "Large aligned writes into fresh blobs");
   b.add_u64_counter(l_bluestore_write_big_bytes, "write_big_bytes",
@@ -6757,9 +6794,8 @@ void BlueStore::_main_bdev_label_try_reserve()
   vector<uint64_t> candidate_positions;
   vector<uint64_t> accepted_positions;
   uint64_t lsize = std::max(BDEV_LABEL_BLOCK_SIZE, min_alloc_size);
-  for (size_t i = 1; i < bdev_label_positions.size(); i++) {
-    uint64_t location = bdev_label_positions[i];
-    if (location + lsize <= bdev->get_size()) {
+  for (uint64_t location : bdev_label_valid_locations) {
+    if (location != BDEV_FIRST_LABEL_POSITION) {
       candidate_positions.push_back(location);
     }
   }
@@ -6891,6 +6927,10 @@ int BlueStore::read_bdev_label(
 {
   unique_ptr<BlockDevice> bdev(BlockDevice::create(
     cct, path, nullptr, nullptr, nullptr, nullptr));
+  if (!bdev) {
+    return -EIO;
+  }
+  bdev->set_no_exclusive_lock();
   int r = bdev->open(path);
   if (r < 0)
     return r;
@@ -6953,7 +6993,7 @@ int BlueStore::_open_bdev(bool create)
 {
   ceph_assert(bdev == NULL);
   string p = path + "/block";
-  bdev = BlockDevice::create(cct, p, aio_cb, static_cast<void*>(this), discard_cb, static_cast<void*>(this));
+  bdev = BlockDevice::create(cct, p, aio_cb, static_cast<void*>(this), discard_cb, static_cast<void*>(this), "bluestore");
   int r = bdev->open(p);
   if (r < 0)
     goto fail;
@@ -7687,6 +7727,10 @@ int BlueStore::_open_db_and_around(bool read_only, bool to_repair)
   if (r < 0)
     goto out_fm;
 
+  if (bdev_label_multi) {
+    _main_bdev_label_try_reserve();
+  }
+
   // Re-open in the proper mode(s).
 
   // Can't simply bypass second open for read-only mode as we need to
@@ -7701,10 +7745,6 @@ int BlueStore::_open_db_and_around(bool read_only, bool to_repair)
 
   if (!read_only) {
     _post_init_alloc();
-  }
-
-  if (bdev_label_multi) {
-    _main_bdev_label_try_reserve();
   }
 
   // when function is called in repair mode (to_repair=true) we skip db->open()/create()
@@ -8951,6 +8991,47 @@ void BlueStore::trim_free_space(const string& type, std::ostream& outss)
   }
 }
 
+int BlueStore::zap_device(CephContext* cct, const string& dev)
+{
+  string path = dev; // dummy var for dout
+  uint64_t brush_size;
+  dout(5) << __func__ << " " << dev << dendl;
+  unique_ptr<BlockDevice>
+    _bdev(BlockDevice::create(cct, dev, nullptr, nullptr, nullptr, nullptr));
+  int r = _bdev->open(dev);
+  if (r < 0)
+    goto fail;
+  brush_size = std::max(_bdev->get_block_size(), BDEV_LABEL_BLOCK_SIZE);
+
+  for (auto off : bdev_label_positions) {
+    uint64_t end = std::min(off + brush_size, _bdev->get_size());
+    if (end > off) {
+      uint64_t l = end - off;
+      bufferlist bl;
+      bl.append_zero(l);
+      dout(10) << __func__ << " writing 0x"
+               << std::hex << off << "~" << l
+               << std::dec << " to " << dev
+               <<  dendl;
+      r = _bdev->write(off, bl, false);
+      if (r < 0) {
+        derr << __func__ << " error writing 0x"
+             << std::hex << off << "~" << l
+             << std::dec << " to " << dev
+             << " : " << cpp_strerror(r) <<  dendl;
+        break;
+      }
+    } else {
+      break;
+    }
+  }
+
+  _bdev->close();
+
+fail:
+  return r;
+}
+
 void BlueStore::set_cache_shards(unsigned num)
 {
   dout(10) << __func__ << " " << num << dendl;
@@ -9112,7 +9193,12 @@ int BlueStore::_mount()
       return r;
     }
   }
-
+  use_write_v2 = cct->_conf.get_val<bool>("bluestore_write_v2");
+  if (cct->_conf.get_val<bool>("bluestore_write_v2_random")) {
+    srand(time(NULL));
+    use_write_v2 = rand() % 2;
+    cct->_conf.set_val("bluestore_write_v2", std::to_string(use_write_v2));
+  }
   _kv_only = false;
   if (cct->_conf->bluestore_fsck_on_mount) {
     int rc = fsck(cct->_conf->bluestore_fsck_on_mount_deep);
@@ -11410,9 +11496,7 @@ int BlueStore::_fsck_on_open(BlueStore::FSCKDepth depth, bool repair)
     string p = path + "/block";
     _write_bdev_label(cct, bdev, p, bdev_label, bdev_labels_in_repair);
     for (uint64_t pos : bdev_labels_in_repair) {
-      if (pos != BDEV_FIRST_LABEL_POSITION) {
-        bdev_label_valid_locations.push_back(pos);
-      }
+      bdev_label_valid_locations.push_back(pos);
     }
     repaired += bdev_labels_in_repair.size();
   }
@@ -16643,18 +16727,7 @@ int BlueStore::_do_alloc_write(
   }
 
   // checksum
-  int64_t csum = csum_type.load();
-  csum = select_option(
-    "csum_type",
-    csum,
-    [&]() {
-      int64_t val;
-      if (coll->pool_opts.get(pool_opts_t::CSUM_TYPE, &val)) {
-        return std::optional<int64_t>(val);
-      }
-      return std::optional<int64_t>();
-    }
-  );
+  int64_t csum = wctx->csum_type;
 
   // compress (as needed) and calc needed space
   uint64_t need = 0;
@@ -17058,6 +17131,21 @@ void BlueStore::_choose_write_options(
   // apply basic csum block size
   wctx->csum_order = block_size_order;
 
+  // checksum
+  int64_t csum = csum_type.load();
+  csum = select_option(
+    "csum_type",
+    csum,
+    [&]() {
+      int64_t val;
+      if (c->pool_opts.get(pool_opts_t::CSUM_TYPE, &val)) {
+        return std::optional<int64_t>(val);
+      }
+      return std::optional<int64_t>();
+    }
+  );
+  wctx->csum_type = csum;
+
   // compression parameters
   unsigned alloc_hints = o->onode.alloc_hint_flags;
   auto cm = select_option(
@@ -17294,6 +17382,51 @@ int BlueStore::_do_write(
   return r;
 }
 
+int BlueStore::_do_write_v2(
+  TransContext *txc,
+  CollectionRef& c,
+  OnodeRef& o,
+  uint64_t offset,
+  uint64_t length,
+  bufferlist& bl,
+  uint32_t fadvise_flags)
+{
+  int r = 0;
+
+  dout(20) << __func__
+	   << " " << o->oid
+	   << " 0x" << std::hex << offset << "~" << length
+	   << " - have 0x" << o->onode.size
+	   << " (" << std::dec << o->onode.size << ")"
+	   << " bytes" << std::hex
+	   << " fadvise_flags 0x" << fadvise_flags
+	   << " alloc_hint 0x" << o->onode.alloc_hint_flags
+           << " expected_object_size " << o->onode.expected_object_size
+           << " expected_write_size " << o->onode.expected_write_size
+           << std::dec
+	   << dendl;
+  _dump_onode<30>(cct, *o);
+  if (length == 0) {
+    return 0;
+  }
+  WriteContext wctx;
+  _choose_write_options(c, o, fadvise_flags, &wctx);
+  if (wctx.compress) {
+    // if we have compression, skip to write_v1
+    return _do_write(txc, c, o, offset, length, bl, fadvise_flags);
+  }
+  if (bl.length() != length) {
+    bl.splice(length, bl.length() - length);
+  }
+  o->extent_map.fault_range(db, offset, length);
+  BlueStore::Writer wr(this, txc, &wctx, o);
+  wr.do_write(offset, bl);
+  o->extent_map.compress_extent_map(offset, length);
+  o->extent_map.dirty_range(offset, length);
+  o->extent_map.maybe_reshard(offset, offset + length);
+  return r;
+}
+
 int BlueStore::_write(TransContext *txc,
 		      CollectionRef& c,
 		      OnodeRef& o,
@@ -17304,14 +17437,21 @@ int BlueStore::_write(TransContext *txc,
   dout(15) << __func__ << " " << c->cid << " " << o->oid
 	   << " 0x" << std::hex << offset << "~" << length << std::dec
 	   << dendl;
+  auto start = mono_clock::now();
   int r = 0;
   if (offset + length >= OBJECT_MAX_SIZE) {
     r = -E2BIG;
   } else {
     _assign_nid(txc, o);
-    r = _do_write(txc, c, o, offset, length, bl, fadvise_flags);
+    if (use_write_v2) {
+      r = _do_write_v2(txc, c, o, offset, length, bl, fadvise_flags);
+    } else {
+      r = _do_write(txc, c, o, offset, length, bl, fadvise_flags);
+    }
     txc->write_onode(o);
   }
+  auto finish = mono_clock::now();
+  logger->tinc(l_bluestore_write_lat, finish - start);
   dout(10) << __func__ << " " << c->cid << " " << o->oid
 	   << " 0x" << std::hex << offset << "~" << length << std::dec
 	   << " = " << r << dendl;
@@ -20428,6 +20568,14 @@ int BlueStore::read_allocation_from_drive_for_bluestore_tool()
     ret = add_existing_bluefs_allocation(allocator.get(), stats);
     if (ret < 0) {
       return ret;
+    }
+    if (bdev_label_multi) {
+      uint64_t lsize = std::max(BDEV_LABEL_BLOCK_SIZE, min_alloc_size);
+      for (uint64_t p : bdev_label_valid_locations) {
+	if (p != BDEV_FIRST_LABEL_POSITION) {
+	  allocator->init_rm_free(p, lsize);
+	}
+      }
     }
 
     duration = ceph_clock_now() - start;

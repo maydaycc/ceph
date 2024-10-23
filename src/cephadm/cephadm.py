@@ -29,6 +29,7 @@ from glob import glob
 from io import StringIO
 from threading import Thread, Event
 from pathlib import Path
+from configparser import ConfigParser
 
 from cephadmlib.constants import (
     # default images
@@ -142,6 +143,7 @@ from cephadmlib.container_types import (
     SidecarContainer,
     extract_uid_gid,
     is_container_running,
+    get_mgr_images,
 )
 from cephadmlib.decorators import (
     deprecated_command,
@@ -178,6 +180,7 @@ from cephadmlib.daemons import (
     SMB,
     SNMPGateway,
     MgmtGateway,
+    OAuth2Proxy,
     Tracing,
     NodeProxy,
 )
@@ -230,6 +233,7 @@ def get_supported_daemons():
     supported_daemons.append(CephadmAgent.daemon_type)
     supported_daemons.append(SNMPGateway.daemon_type)
     supported_daemons.append(MgmtGateway.daemon_type)
+    supported_daemons.append(OAuth2Proxy.daemon_type)
     supported_daemons.extend(Tracing.components)
     supported_daemons.append(NodeProxy.daemon_type)
     supported_daemons.append(SMB.daemon_type)
@@ -468,6 +472,8 @@ def update_default_image(ctx: CephadmContext) -> None:
             ctx.image = SNMPGateway.default_image
         if type_ == MgmtGateway.daemon_type:
             ctx.image = MgmtGateway.default_image
+        if type_ == OAuth2Proxy.daemon_type:
+            ctx.image = OAuth2Proxy.default_image
         if type_ == CephNvmeof.daemon_type:
             ctx.image = CephNvmeof.default_image
         if type_ in Tracing.components:
@@ -591,6 +597,8 @@ def infer_local_ceph_image(ctx: CephadmContext, container_path: str) -> Optional
             if digest and not digest.endswith('@'):
                 logger.info(f"Using ceph image with id '{image_id}' and tag '{tag}' created on {created_date}\n{digest}")
                 return digest
+    if container_info is not None:
+        logger.warning(f"Not using image '{container_info.image_id}' as it's not in list of non-dangling images with ceph=True label")
     return None
 
 
@@ -863,6 +871,10 @@ def create_daemon_dirs(
     elif daemon_type == MgmtGateway.daemon_type:
         cg = MgmtGateway.init(ctx, fsid, ident.daemon_id)
         cg.create_daemon_dirs(data_dir, uid, gid)
+
+    elif daemon_type == OAuth2Proxy.daemon_type:
+        co = OAuth2Proxy.init(ctx, fsid, ident.daemon_id)
+        co.create_daemon_dirs(data_dir, uid, gid)
 
     elif daemon_type == NodeProxy.daemon_type:
         node_proxy = NodeProxy.init(ctx, fsid, ident.daemon_id)
@@ -2400,6 +2412,12 @@ def enable_cephadm_mgr_module(
     logger.info('Enabling cephadm module...')
     cli(['mgr', 'module', 'enable', 'cephadm'])
     wait_for_mgr_restart()
+    # https://tracker.ceph.com/issues/67969
+    # luckily `ceph mgr module enable <module>` returns
+    # a zero rc when the module is already enabled so
+    # this is no issue even if it is unnecessary
+    logger.info('Verifying orchestrator module is enabled...')
+    cli(['mgr', 'module', 'enable', 'orchestrator'])
     logger.info('Setting orchestrator backend to cephadm...')
     cli(['orch', 'set', 'backend', 'cephadm'])
 
@@ -2938,7 +2956,7 @@ def command_bootstrap(ctx):
         mounts = {}
         mounts[pathify(ctx.apply_spec)] = '/tmp/spec.yml:ro'
         try:
-            out = cli(['orch', 'apply', '-i', '/tmp/spec.yml'], extra_mounts=mounts)
+            out = cli(['orch', 'apply', '--continue-on-error', '-i', '/tmp/spec.yml'], extra_mounts=mounts)
             logger.info(out)
         except Exception:
             ctx.error_code = -errno.EINVAL
@@ -3560,7 +3578,7 @@ def list_daemons(
                                 elif daemon_type == 'grafana':
                                     out, err, code = call(ctx,
                                                           [container_path, 'exec', container_id,
-                                                           'grafana-server', '-v'],
+                                                           'grafana', 'server', '-v'],
                                                           verbosity=CallVerbosity.QUIET)
                                     if not code and \
                                        out.startswith('Version '):
@@ -3604,6 +3622,9 @@ def list_daemons(
                                     seen_versions[image_id] = version
                                 elif daemon_type == MgmtGateway.daemon_type:
                                     version = MgmtGateway.get_version(ctx, container_id)
+                                    seen_versions[image_id] = version
+                                elif daemon_type == OAuth2Proxy.daemon_type:
+                                    version = OAuth2Proxy.get_version(ctx, container_id)
                                     seen_versions[image_id] = version
                                 else:
                                     logger.warning('version for unknown daemon type %s' % daemon_type)
@@ -4063,7 +4084,7 @@ def command_adopt_grafana(ctx, daemon_id, fsid):
     ports = Monitoring.port_map['grafana']
     endpoints = [EndPoint('0.0.0.0', p) for p in ports]
 
-    _stop_and_disable(ctx, 'grafana-server')
+    _stop_and_disable(ctx, 'grafana server')
 
     ident = DaemonIdentity(fsid, daemon_type, daemon_id)
     data_dir_dst = make_data_dir(
@@ -4659,6 +4680,13 @@ def command_rescan_disks(ctx: CephadmContext) -> str:
 
     return f'Ok. {len(all_scan_files)} adapters detected: {len(scan_files)} rescanned, {len(skipped)} skipped, {len(failures)} failed ({elapsed:.2f}s)'
 
+
+def command_list_images(ctx: CephadmContext) -> None:
+    """this function will list the default images used by different services"""
+    cp_obj = ConfigParser()
+    cp_obj['mgr'] = get_mgr_images()
+    # print default images
+    cp_obj.write(sys.stdout)
 
 ##################################
 
@@ -5523,6 +5551,9 @@ def _get_parser():
         'disk-rescan', help='rescan all HBAs to detect new/removed devices')
     parser_disk_rescan.set_defaults(func=command_rescan_disks)
 
+    parser_list_images = subparsers.add_parser(
+        'list-images', help='list all the default images')
+    parser_list_images.set_defaults(func=command_list_images)
     return parser
 
 

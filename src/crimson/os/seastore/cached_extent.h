@@ -350,7 +350,7 @@ public:
 	<< ", modify_time=" << sea_time_point_printer_t{modify_time}
 	<< ", paddr=" << get_paddr()
 	<< ", prior_paddr=" << prior_poffset_str
-	<< ", length=" << get_length()
+	<< std::hex << ", length=0x" << get_length() << std::dec
 	<< ", state=" << state
 	<< ", last_committed_crc=" << last_committed_crc
 	<< ", refcount=" << use_count()
@@ -515,7 +515,7 @@ public:
 
   /// Returns true if extent is a plcaeholder
   bool is_placeholder() const {
-    return get_type() == extent_types_t::RETIRED_PLACEHOLDER;
+    return is_retired_placeholder_type(get_type());
   }
 
   bool is_pending_io() const {
@@ -685,7 +685,7 @@ private:
     CachedExtent,
     boost::intrusive::list_member_hook<>,
     &CachedExtent::primary_ref_list_hook>;
-  using list = boost::intrusive::list<
+  using primary_ref_list = boost::intrusive::list<
     CachedExtent,
     primary_ref_list_member_options>;
 
@@ -786,7 +786,7 @@ protected:
 
   struct retired_placeholder_t{};
   CachedExtent(retired_placeholder_t, extent_len_t _length)
-    : state(extent_state_t::INVALID),
+    : state(extent_state_t::CLEAN),
       length(_length) {
     assert(length > 0);
   }
@@ -1325,7 +1325,7 @@ public:
   void on_rewrite(Transaction&, CachedExtent &extent, extent_len_t off) final {
     assert(get_type() == extent.get_type());
     auto &lextent = (LogicalCachedExtent&)extent;
-    set_laddr(lextent.get_laddr() + off);
+    set_laddr((lextent.get_laddr() + off).checked_to_laddr());
   }
 
   bool has_laddr() const {

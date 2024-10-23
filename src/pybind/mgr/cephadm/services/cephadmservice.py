@@ -564,6 +564,16 @@ class CephadmService(metaclass=ABCMeta):
         """Called to carry out any purge tasks following service removal"""
         logger.debug(f'Purge called for {self.TYPE} - no action taken')
 
+    def ignore_possible_stray(
+        self, service_type: str, daemon_id: str, name: str
+    ) -> bool:
+        """Called to decide if a possible stray service should be ignored
+        because it "virtually" belongs to a service.
+        This is mainly needed when properly managed services spawn layered ceph
+        services with different names (for example).
+        """
+        return False
+
 
 class CephService(CephadmService):
     def generate_config(self, daemon_spec: CephadmDaemonDeploySpec) -> Tuple[Dict[str, Any], List[str]]:
@@ -974,10 +984,9 @@ class RgwService(CephService):
     def allow_colo(self) -> bool:
         return True
 
-    def config(self, spec: RGWSpec) -> None:  # type: ignore
+    def set_realm_zg_zone(self, spec: RGWSpec) -> None:
         assert self.TYPE == spec.service_type
 
-        # set rgw_realm rgw_zonegroup and rgw_zone, if present
         if spec.rgw_realm:
             ret, out, err = self.mgr.check_mon_command({
                 'prefix': 'config set',
@@ -999,6 +1008,18 @@ class RgwService(CephService):
                 'name': 'rgw_zone',
                 'value': spec.rgw_zone,
             })
+
+    def config(self, spec: RGWSpec) -> None:  # type: ignore
+        assert self.TYPE == spec.service_type
+
+        # set rgw_realm rgw_zonegroup and rgw_zone, if present
+        self.set_realm_zg_zone(spec)
+
+        if spec.generate_cert and not spec.rgw_frontend_ssl_certificate:
+            # generate a self-signed cert for the rgw service
+            cert, key = self.mgr.cert_mgr.ssl_certs.generate_root_cert(custom_san_list=spec.zonegroup_hostnames)
+            spec.rgw_frontend_ssl_certificate = ''.join([key, cert])
+            self.mgr.spec_store.save(spec)
 
         if spec.rgw_frontend_ssl_certificate:
             if isinstance(spec.rgw_frontend_ssl_certificate, list):
@@ -1273,7 +1294,7 @@ class CephExporterService(CephService):
         if spec.stats_period:
             exporter_config.update({'stats-period': f'{spec.stats_period}'})
 
-        security_enabled, mgmt_gw_enabled = self.mgr._get_security_config()
+        security_enabled, _, _ = self.mgr._get_security_config()
         if security_enabled:
             exporter_config.update({'https_enabled': True})
             crt, key = self.get_certificates(daemon_spec)

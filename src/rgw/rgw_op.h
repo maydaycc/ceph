@@ -1219,6 +1219,7 @@ protected:
   std::string copy_source;
   const char *copy_source_range;
   RGWBucketInfo copy_source_bucket_info;
+  rgw::sal::Attrs copy_source_bucket_attrs;
   std::string copy_source_tenant_name;
   std::string copy_source_bucket_name;
   std::string copy_source_object_name;
@@ -1458,6 +1459,24 @@ public:
   RGWOpType get_type() override { return RGW_OP_PUT_METADATA_OBJECT; }
   uint32_t op_mask() override { return RGW_OP_TYPE_WRITE; }
   virtual bool need_object_expiration() { return false; }
+};
+
+class RGWRestoreObj : public RGWOp {
+protected:
+  std::optional<uint64_t> expiry_days;
+public:
+  RGWRestoreObj() {}
+
+  int init_processing(optional_yield y) override;
+  int verify_permission(optional_yield y) override;
+  void pre_exec() override;
+  void execute(optional_yield y) override;
+  virtual int get_params(optional_yield y) {return 0;}
+
+  void send_response() override = 0;
+  const char* name() const override { return "restore_obj"; }
+  RGWOpType get_type() override { return RGW_OP_RESTORE_OBJ; }
+  uint32_t op_mask() override { return RGW_OP_TYPE_WRITE; }
 };
 
 class RGWDeleteObj : public RGWOp {

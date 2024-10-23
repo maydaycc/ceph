@@ -1386,7 +1386,7 @@ void CInode::_commit_ops(int r, C_GatherBuilder &gather_bld,
 }
 
 void CInode::_store_backtrace(std::vector<CInodeCommitOperation> &ops_vec,
-                              inode_backtrace_t &bt, int op_prio)
+                              inode_backtrace_t &bt, int op_prio, bool ignore_old_pools)
 {
   dout(10) << __func__ << " on " << *this << dendl;
   ceph_assert(is_dirty_parent());
@@ -1407,8 +1407,8 @@ void CInode::_store_backtrace(std::vector<CInodeCommitOperation> &ops_vec,
   ops_vec.emplace_back(op_prio, pool, get_inode()->layout,
                        mdcache->mds->mdsmap->get_up_features(), slink);
 
-  if (!state_test(STATE_DIRTYPOOL) || get_inode()->old_pools.empty()) {
-    dout(20) << __func__ << ": no dirtypool or no old pools" << dendl;
+  if (!state_test(STATE_DIRTYPOOL) || get_inode()->old_pools.empty() || ignore_old_pools) {
+    dout(20) << __func__ << ": no dirtypool or no old pools or ignore_old_pools" << dendl;
     return;
   }
 
@@ -1431,7 +1431,7 @@ void CInode::store_backtrace(MDSContext *fin, int op_prio)
   inode_backtrace_t bt;
   auto version = get_inode()->backtrace_version;
 
-  _store_backtrace(ops_vec, bt, op_prio);
+  _store_backtrace(ops_vec, bt, op_prio, false);
 
   C_GatherBuilder gather(g_ceph_context,
 			 new C_OnFinisher(
@@ -1442,12 +1442,14 @@ void CInode::store_backtrace(MDSContext *fin, int op_prio)
   gather.activate();
 }
 
-void CInode::store_backtrace(CInodeCommitOperations &op, int op_prio)
+void CInode::store_backtrace(CInodeCommitOperations &op, int op_prio,
+			     bool ignore_old_pools)
 {
   op.version = get_inode()->backtrace_version;
   op.in = this;
 
-  _store_backtrace(op.ops_vec, op.bt, op_prio);
+  // update backtraces in old pools
+  _store_backtrace(op.ops_vec, op.bt, op_prio, ignore_old_pools);
 }
 
 void CInode::_stored_backtrace(int r, version_t v, Context *fin)
@@ -2987,12 +2989,15 @@ void CInode::clear_ambiguous_auth()
 bool CInode::can_auth_pin(int *err_ret) const {
   int err;
   if (!is_auth()) {
+    dout(20) << __func__ << ": error - no auth" << dendl;
     err = ERR_NOT_AUTH;
   } else if (is_freezing_inode() || is_frozen_inode() || is_frozen_auth_pin()) {
+    dout(20) << __func__ << ": error - exporting inode" << dendl;
     err = ERR_EXPORTING_INODE;
   } else {
     if (parent)
       return parent->can_auth_pin(err_ret);
+    dout(20) << __func__ << ": auth!" << dendl;
     err = 0;
   }
   if (err && err_ret)
@@ -4237,8 +4242,8 @@ void CInode::encode_cap_message(const ref_t<MClientCaps> &m, Capability *cap)
   m->size = i->size;
   m->truncate_seq = i->truncate_seq;
   m->truncate_size = i->truncate_size;
-  m->fscrypt_file = i->fscrypt_file;
-  m->fscrypt_auth = i->fscrypt_auth;
+  m->fscrypt_file.assign(i->fscrypt_file.begin(), i->fscrypt_file.end());
+  m->fscrypt_auth.assign(i->fscrypt_auth.begin(), i->fscrypt_auth.end());
   m->mtime = i->mtime;
   m->atime = i->atime;
   m->ctime = i->ctime;
@@ -4584,8 +4589,11 @@ void InodeStoreBase::dump(Formatter *f) const
     for (const auto& [key, val] : *xattrs) {
       f->open_object_section("xattr");
       f->dump_string("key", key);
-      std::string v(val.c_str(), val.length());
-      f->dump_string("val", v);
+      if (val.length()) {
+        f->dump_string("val", std::string(val.c_str(), val.length()));
+      } else {
+        f->dump_string("val", "");
+      }
       f->close_section();
     }
   }
@@ -5281,6 +5289,7 @@ void CInode::scrub_maybe_delete_info()
 {
   if (scrub_infop &&
       !scrub_infop->scrub_in_progress &&
+      !scrub_infop->uninline_in_progress &&
       !scrub_infop->last_scrub_dirty) {
     scrub_infop.reset();
   }
@@ -5292,10 +5301,17 @@ void CInode::scrub_initialize(ScrubHeaderRef& header)
 
   scrub_info();
   scrub_infop->scrub_in_progress = true;
+  scrub_infop->uninline_in_progress = false;
   scrub_infop->queued_frags.clear();
   scrub_infop->header = header;
   header->inc_num_pending();
   // right now we don't handle remote inodes
+}
+
+void CInode::uninline_initialize()
+{
+  dout(20) << __func__ << " with scrub_version " << get_version() << dendl;
+  scrub_infop->uninline_in_progress = true;
 }
 
 void CInode::scrub_aborted() {
@@ -5303,19 +5319,34 @@ void CInode::scrub_aborted() {
   ceph_assert(scrub_is_in_progress());
 
   scrub_infop->scrub_in_progress = false;
+  scrub_infop->uninline_in_progress = false;
   scrub_infop->header->dec_num_pending();
   scrub_maybe_delete_info();
+}
+
+void CInode::common_finished() {
+  if (!scrub_is_in_progress()) {
+    scrub_infop->last_scrub_version = get_version();
+    scrub_infop->last_scrub_stamp = ceph_clock_now();
+    scrub_infop->last_scrub_dirty = true;
+    scrub_infop->header->dec_num_pending();
+  }
 }
 
 void CInode::scrub_finished() {
   dout(20) << __func__ << dendl;
   ceph_assert(scrub_is_in_progress());
 
-  scrub_infop->last_scrub_version = get_version();
-  scrub_infop->last_scrub_stamp = ceph_clock_now();
-  scrub_infop->last_scrub_dirty = true;
   scrub_infop->scrub_in_progress = false;
-  scrub_infop->header->dec_num_pending();
+  common_finished();
+}
+
+void CInode::uninline_finished() {
+  dout(20) << __func__ << dendl;
+  ceph_assert(scrub_is_in_progress());
+
+  scrub_infop->uninline_in_progress = false;
+  common_finished();
 }
 
 int64_t CInode::get_backtrace_pool() const

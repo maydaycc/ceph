@@ -22,28 +22,29 @@ export class MultisitePageHelper extends PageHelper {
   }
 
   @PageHelper.restrictTo(pages.create.url)
-  create(group_id: string, status: string) {
+  create(group_id: string, status: string, bucket_name: string) {
     // Enter in group_id
     cy.get('#group_id').type(group_id);
     // Show Status
     this.selectOption('status', status);
     cy.get('#status').should('have.class', 'ng-valid');
-
+    // Enter the bucket_name
+    cy.get('#bucket_name').type(bucket_name);
     // Click the create button and wait for policy to be made
     cy.contains('button', 'Create Sync Policy Group').wait(WAIT_TIMER).click();
     this.getFirstTableCell(group_id).should('exist');
   }
 
   @PageHelper.restrictTo(pages.index.url)
-  edit(group_id: string, status: string) {
-    cy.visit(`${pages.edit.url}/${group_id})`);
+  edit(group_id: string, status: string, bucket_name: string) {
+    cy.visit(`${pages.edit.url}/${group_id}/${bucket_name})`);
 
     // Change the status field
     this.selectOption('status', status);
     cy.contains('button', 'Edit Sync Policy Group').click();
 
     this.searchTable(group_id);
-    cy.get(`datatable-body-cell:nth-child(${this.columnIndex.status})`)
+    cy.get(`[cdstabledata]:nth-child(${this.columnIndex.status})`)
       .find('.badge-warning')
       .should('contain', status);
   }
@@ -68,10 +69,7 @@ export class MultisitePageHelper extends PageHelper {
 
     cy.get('button.tc_submitButton').click();
 
-    cy.get('cd-rgw-multisite-sync-policy-details .datatable-body-cell-label').should(
-      'contain',
-      flow_id
-    );
+    cy.get('cd-rgw-multisite-sync-policy-details .[cdstabledata]').should('contain', flow_id);
 
     cy.get('cd-rgw-multisite-sync-policy-details')
       .first()
@@ -93,7 +91,7 @@ export class MultisitePageHelper extends PageHelper {
     });
 
     cy.get('cd-rgw-multisite-sync-policy-details').within(() => {
-      cy.get('.datatable-body-cell-label').should('contain', flow_id);
+      cy.get('.[cdstabledata]').should('contain', flow_id);
       cy.get('[aria-label=search]').first().clear({ force: true }).type(flow_id);
       cy.get('input.cd-datatable-checkbox').first().check();
       cy.get('.table-actions button').first().click();
@@ -113,7 +111,7 @@ export class MultisitePageHelper extends PageHelper {
   }
 
   getTableCellWithContent(nestedClass: string, content: string) {
-    return cy.contains(`${nestedClass} .datatable-body-cell-label`, content);
+    return cy.contains(`${nestedClass} .[cdstabledata]`, content);
   }
 
   @PageHelper.restrictTo(pages.index.url)
@@ -122,7 +120,7 @@ export class MultisitePageHelper extends PageHelper {
     this.getTab('Flow').should('exist');
     this.getTab('Flow').click();
     cy.get('cd-rgw-multisite-sync-policy-details').within(() => {
-      cy.get('.datatable-body-cell-label').should('contain', flow_id);
+      cy.get('.[cdstabledata]').should('contain', flow_id);
       cy.get('[aria-label=search]').first().clear({ force: true }).type(flow_id);
     });
 
@@ -187,7 +185,7 @@ export class MultisitePageHelper extends PageHelper {
       .type(dest_zones[0]);
     cy.get('cd-rgw-multisite-sync-policy-details cd-table')
       .eq(1)
-      .find('.datatable-body-cell-label')
+      .find('.[cdstabledata]')
       .should('contain', dest_zones[0]);
   }
 
@@ -219,10 +217,7 @@ export class MultisitePageHelper extends PageHelper {
     }
     cy.get('button.tc_submitButton').click();
 
-    cy.get('cd-rgw-multisite-sync-policy-details .datatable-body-cell-label').should(
-      'contain',
-      pipe_id
-    );
+    cy.get('cd-rgw-multisite-sync-policy-details .[cdstabledata]').should('contain', pipe_id);
 
     cy.get('cd-rgw-multisite-sync-policy-details')
       .first()
@@ -244,7 +239,7 @@ export class MultisitePageHelper extends PageHelper {
     });
 
     cy.get('cd-rgw-multisite-sync-policy-details').within(() => {
-      cy.get('.datatable-body-cell-label').should('contain', pipe_id);
+      cy.get('.[cdstabledata]').should('contain', pipe_id);
       cy.get('[aria-label=search]').first().clear({ force: true }).type(pipe_id);
       cy.get('input.cd-datatable-checkbox').first().check();
       cy.get('.table-actions button').first().click();
@@ -270,7 +265,7 @@ export class MultisitePageHelper extends PageHelper {
     this.getTab('Pipe').should('exist');
     this.getTab('Pipe').click();
     cy.get('cd-rgw-multisite-sync-policy-details').within(() => {
-      cy.get('.datatable-body-cell-label').should('contain', pipe_id);
+      cy.get('.[cdstabledata]').should('contain', pipe_id);
       cy.get('[aria-label=search]').first().clear({ force: true }).type(pipe_id);
     });
 

@@ -11,7 +11,6 @@ import { CdTableColumn } from '~/app/shared/models/cd-table-column';
 import { CdTableFetchDataContext } from '~/app/shared/models/cd-table-fetch-data-context';
 import { CephfsSubvolume, SubvolumeSnapshot } from '~/app/shared/models/cephfs-subvolume.model';
 import { CephfsSubvolumeSnapshotsFormComponent } from './cephfs-subvolume-snapshots-form/cephfs-subvolume-snapshots-form.component';
-import { ModalService } from '~/app/shared/services/modal.service';
 import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
 import { Permissions } from '~/app/shared/models/permissions';
 import { CdTableSelection } from '~/app/shared/models/cd-table-selection';
@@ -27,6 +26,7 @@ import moment from 'moment';
 import { Validators } from '@angular/forms';
 import { CdValidators } from '~/app/shared/forms/cd-validators';
 import { ModalCdsService } from '~/app/shared/services/modal-cds.service';
+import { DEFAULT_SUBVOLUME_GROUP } from '~/app/shared/constants/cephfs.constant';
 
 @Component({
   selector: 'cd-cephfs-subvolume-snapshots-list',
@@ -58,17 +58,17 @@ export class CephfsSubvolumeSnapshotsListComponent implements OnInit, OnChanges 
   isLoading = true;
 
   observables: any = [];
+  allGroups: any = [];
 
   constructor(
     private cephfsSubvolumeGroupService: CephfsSubvolumeGroupService,
     private cephfsSubvolumeService: CephfsSubvolumeService,
     private actionLabels: ActionLabelsI18n,
-    private modalService: ModalService,
+    private modalService: ModalCdsService,
     private authStorageService: AuthStorageService,
     private cdDatePipe: CdDatePipe,
     private taskWrapper: TaskWrapperService,
-    private notificationService: NotificationService,
-    private cdsModalService: ModalCdsService
+    private notificationService: NotificationService
   ) {
     this.permissions = this.authStorageService.getPermissions();
   }
@@ -128,8 +128,14 @@ export class CephfsSubvolumeSnapshotsListComponent implements OnInit, OnChanges 
       .pipe(
         switchMap((groups) => {
           // manually adding the group '_nogroup' to the list.
-          groups.unshift({ name: '' });
 
+          groups.unshift({ name: '' });
+          this.allGroups = Array.from(groups).map((group) => {
+            return {
+              value: group.name,
+              text: group.name === '' ? DEFAULT_SUBVOLUME_GROUP : group.name
+            };
+          });
           const observables = groups.map((group) =>
             this.cephfsSubvolumeService.existsInFs(this.fsName, group.name).pipe(
               switchMap((resp) => {
@@ -203,17 +209,13 @@ export class CephfsSubvolumeSnapshotsListComponent implements OnInit, OnChanges 
   }
 
   openModal(edit = false) {
-    this.modalService.show(
-      CephfsSubvolumeSnapshotsFormComponent,
-      {
-        fsName: this.fsName,
-        subVolumeName: this.activeSubVolumeName,
-        subVolumeGroupName: this.activeGroupName,
-        subVolumeGroups: this.subvolumeGroupList,
-        isEdit: edit
-      },
-      { size: 'lg' }
-    );
+    this.modalService.show(CephfsSubvolumeSnapshotsFormComponent, {
+      fsName: this.fsName,
+      subVolumeName: this.activeSubVolumeName,
+      subVolumeGroupName: this.activeGroupName,
+      subVolumeGroups: this.subvolumeGroupList,
+      isEdit: edit
+    });
   }
 
   updateSelection(selection: CdTableSelection) {
@@ -225,7 +227,7 @@ export class CephfsSubvolumeSnapshotsListComponent implements OnInit, OnChanges 
     const subVolumeName = this.activeSubVolumeName;
     const subVolumeGroupName = this.activeGroupName;
     const fsName = this.fsName;
-    this.modalRef = this.cdsModalService.show(CriticalConfirmationModalComponent, {
+    this.modalRef = this.modalService.show(CriticalConfirmationModalComponent, {
       actionDescription: this.actionLabels.REMOVE,
       itemNames: [snapshotName],
       itemDescription: 'Snapshot',
@@ -246,7 +248,7 @@ export class CephfsSubvolumeSnapshotsListComponent implements OnInit, OnChanges 
             )
           })
           .subscribe({
-            complete: () => this.cdsModalService.dismissAll(),
+            complete: () => this.modalService.dismissAll(),
             error: () => this.modalRef.componentInstance.stopLoadingSpinner()
           })
     });
@@ -254,9 +256,6 @@ export class CephfsSubvolumeSnapshotsListComponent implements OnInit, OnChanges 
 
   cloneModal() {
     const cloneName = `clone_${moment().toISOString(true)}`;
-    const allGroups = Array.from(this.subvolumeGroupList).map((group) => {
-      return { value: group, text: group === '' ? '_nogroup' : group };
-    });
     this.modalService.show(FormModalComponent, {
       titleText: $localize`Create clone`,
       fields: [
@@ -290,7 +289,7 @@ export class CephfsSubvolumeSnapshotsListComponent implements OnInit, OnChanges 
           valueChangeListener: true,
           dependsOn: 'cloneName',
           typeConfig: {
-            options: allGroups
+            options: this.allGroups
           }
         }
       ],

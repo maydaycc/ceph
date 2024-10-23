@@ -41,7 +41,7 @@ from .api import PSTopicS3, \
     admin
 
 from nose import SkipTest
-from nose.tools import assert_not_equal, assert_equal, assert_in, assert_true
+from nose.tools import assert_not_equal, assert_equal, assert_in, assert_not_in, assert_true
 import boto.s3.tagging
 
 # configure logging for the tests module
@@ -167,19 +167,19 @@ class HTTPPostHandler(BaseHTTPRequestHandler):
         """implementation of POST handler"""
         content_length = int(self.headers['Content-Length'])
         if content_length == 0:
-            log.info('HTTP Server received iempty event')
+            log.info('HTTP Server received empty event')
             self.send_response(200)
             self.end_headers()
             return
         body = self.rfile.read(content_length)
         if self.server.cloudevents:
-            event = from_http(self.headers, body) 
+            event = from_http(self.headers, body)
             record = json.loads(body)['Records'][0]
             assert_equal(event['specversion'], '1.0')
             assert_equal(event['id'], record['responseElements']['x-amz-request-id'] + '.' + record['responseElements']['x-amz-id-2'])
             assert_equal(event['source'], 'ceph:s3.' + record['awsRegion'] + '.' + record['s3']['bucket']['name'])
             assert_equal(event['type'], 'com.amazonaws.' + record['eventName'])
-            assert_equal(event['datacontenttype'], 'application/json') 
+            assert_equal(event['datacontenttype'], 'application/json')
             assert_equal(event['subject'], record['s3']['object']['key'])
             assert_equal(parser.parse(event['time']), parser.parse(record['eventTime']))
         log.info('HTTP Server received event: %s', str(body))
@@ -238,7 +238,7 @@ class HTTPServerWithEvents(ThreadingHTTPServer):
         self.acquire_lock()
         self.events.append(event)
         self.lock.release()
-    
+
     def verify_s3_events(self, keys, exact_match=False, deletions=False, expected_sizes={}, etags=[]):
         """verify stored s3 records agains a list of keys"""
         self.acquire_lock()
@@ -419,8 +419,8 @@ class KafkaReceiver(object):
             port = 9093
         while remaining_retries > 0:
             try:
-                self.consumer = KafkaConsumer(topic, 
-                        bootstrap_servers = kafka_server+':'+str(port), 
+                self.consumer = KafkaConsumer(topic,
+                        bootstrap_servers = kafka_server+':'+str(port),
                         security_protocol=security_type,
                         consumer_timeout_ms=16000,
                         auto_offset_reset='earliest')
@@ -487,10 +487,6 @@ def stop_kafka_receiver(receiver, task):
 
 
 def get_ip():
-    return 'localhost'
-
-
-def get_ip_http():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         # address should not be reachable
@@ -509,7 +505,7 @@ def connection():
 
     conn = S3Connection(aws_access_key_id=vstart_access_key,
                   aws_secret_access_key=vstart_secret_key,
-                      is_secure=False, port=port_no, host=hostname, 
+                      is_secure=False, port=port_no, host=hostname,
                       calling_format='boto.s3.connection.OrdinaryCallingFormat')
 
     return conn
@@ -523,7 +519,7 @@ def connection2():
 
     conn = S3Connection(aws_access_key_id=vstart_access_key,
                   aws_secret_access_key=vstart_secret_key,
-                      is_secure=False, port=port_no, host=hostname, 
+                      is_secure=False, port=port_no, host=hostname,
                       calling_format='boto.s3.connection.OrdinaryCallingFormat')
 
     return conn
@@ -547,7 +543,7 @@ def another_user(user=None, tenant=None, account=None):
 
     conn = S3Connection(aws_access_key_id=access_key,
                   aws_secret_access_key=secret_key,
-                      is_secure=False, port=get_config_port(), host=get_config_host(), 
+                      is_secure=False, port=get_config_port(), host=get_config_host(),
                       calling_format='boto.s3.connection.OrdinaryCallingFormat')
     return conn, arn
 
@@ -667,13 +663,13 @@ def connect_random_user(tenant=''):
 @attr('basic_test')
 def test_ps_s3_topic_on_master():
     """ test s3 topics set/get/delete on master """
-    
+
     tenant = 'kaboom'
     conn = connect_random_user(tenant)
-    
+
     # make sure there are no leftover topics
     delete_all_topics(conn, tenant, get_config_cluster())
-    
+
     zonegroup = get_config_zonegroup()
     bucket_name = gen_bucket_name()
     topic_name = bucket_name + TOPIC_SUFFIX
@@ -715,31 +711,28 @@ def test_ps_s3_topic_on_master():
     assert_equal(status, 404)
 
     # get the remaining 2 topics
-    result, status = topic_conf1.get_list()
-    assert_equal(status, 200)
-    assert_equal(len(result['ListTopicsResponse']['ListTopicsResult']['Topics']['member']), 2)
+    list_topics(2, tenant)
 
     # delete topics
-    result = topic_conf2.del_config()
+    status = topic_conf2.del_config()
     assert_equal(status, 200)
-    result = topic_conf3.del_config()
+    status = topic_conf3.del_config()
     assert_equal(status, 200)
 
     # get topic list, make sure it is empty
-    result, status = topic_conf1.get_list()
-    assert_equal(result['ListTopicsResponse']['ListTopicsResult']['Topics'], None)
+    list_topics(0, tenant)
 
 
 @attr('basic_test')
 def test_ps_s3_topic_admin_on_master():
     """ test s3 topics set/get/delete on master """
-    
+
     tenant = 'kaboom'
     conn = connect_random_user(tenant)
-    
+
     # make sure there are no leftover topics
     delete_all_topics(conn, tenant, get_config_cluster())
-    
+
     zonegroup = get_config_zonegroup()
     bucket_name = gen_bucket_name()
     topic_name = bucket_name + TOPIC_SUFFIX
@@ -828,18 +821,44 @@ def notification_configuration(with_cli):
                  'arn:aws:sns:' + zonegroup + '::' + topic_name)
     # create s3 notification
     notification_name = bucket_name + NOTIFICATION_SUFFIX
-    topic_conf_list = [{'Id': notification_name+'_1',
+    topic_conf_list = [
+                    {
+                        'Id': notification_name+'_1',
                         'TopicArn': topic_arn,
-                        'Events': ['s3:ObjectCreated:*']
-                        },
-                       {'Id': notification_name+'_2',
+                        'Events': ['s3:ObjectCreated:*'],
+                        'Filter': {
+                            'Key': {
+                                'FilterRules': [
+                                    {'Name': 'prefix', 'Value': 'test'},
+                                    {'Name': 'suffix', 'Value': 'txt'}
+                                ]
+                            }
+                        }
+                    },
+                    {
+                        'Id': notification_name+'_2',
                         'TopicArn': topic_arn,
-                        'Events': ['s3:ObjectRemoved:*']
-                        },
-                       {'Id': notification_name+'_3',
+                        'Events': ['s3:ObjectRemoved:*'],
+                        'Filter': {
+                            'Metadata': {
+                                'FilterRules': [
+                                    {'Name': 'x-amz-meta-foo', 'Value': 'bar'},
+                                    {'Name': 'x-amz-meta-hello', 'Value': 'world'}]
+                            },
+                        }
+                    },
+                    {
+                        'Id': notification_name+'_3',
                         'TopicArn': topic_arn,
-                        'Events': []
-                        }]
+                        'Events': [],
+                        'Filter': {
+                            'Tags': {
+                                'FilterRules': [
+                                    {'Name': 'tag1', 'Value': 'value1'},
+                                    {'Name': 'tag2', 'Value': 'value2'}]
+                            }
+                        }
+                    }]
     s3_notification_conf = PSNotificationS3(conn, bucket_name, topic_conf_list)
     _, status = s3_notification_conf.set_config()
     assert_equal(status/100, 2)
@@ -1016,7 +1035,7 @@ def test_ps_s3_notification_filter_on_master():
     """ test s3 notification filter on master """
 
     hostname = get_ip()
-    
+
     conn = connection()
     ps_zone = conn
 
@@ -1035,7 +1054,7 @@ def test_ps_s3_notification_filter_on_master():
     # create s3 topic
     endpoint_address = 'amqp://' + hostname
     endpoint_args = 'push-endpoint='+endpoint_address+'&amqp-exchange=' + exchange +'&amqp-ack-level=broker'
-        
+
     topic_conf = PSTopicS3(conn, topic_name, zonegroup, endpoint_args=endpoint_args)
     topic_arn = topic_conf.set_config()
 
@@ -1297,7 +1316,7 @@ def notification_push(endpoint_type, conn, account=None, cloudevents=False):
     task = None
     if endpoint_type == 'http':
         # create random port for the http server
-        host = get_ip_http()
+        host = get_ip()
         port = random.randint(10000, 20000)
         # start an http server in a separate thread
         receiver = HTTPServerWithEvents((host, port), cloudevents=cloudevents)
@@ -1901,7 +1920,7 @@ def test_lifecycle_abort_mpu():
 
 def ps_s3_creation_triggers_on_master(external_endpoint_address=None, ca_location=None, verify_ssl='true'):
     """ test object creation s3 notifications in using put/copy/post on master"""
-    
+
     if not external_endpoint_address:
         hostname = get_ip()
         proc = init_rabbitmq()
@@ -2305,7 +2324,7 @@ def metadata_filter(endpoint_type, conn):
     # create bucket
     bucket_name = gen_bucket_name()
     bucket = conn.create_bucket(bucket_name)
-    topic_name = bucket_name + TOPIC_SUFFIX 
+    topic_name = bucket_name + TOPIC_SUFFIX
 
     # start endpoint receiver
     host = get_ip()
@@ -2367,7 +2386,7 @@ def metadata_filter(endpoint_type, conn):
     key_name = 'copy_of_foo'
     bucket.copy_key(key_name, bucket.name, key.name)
     expected_keys.append(key_name)
-    
+
     # create another objects in the bucket using COPY
     # but override the metadata value
     key_name = 'another_copy_of_foo'
@@ -2489,7 +2508,7 @@ def test_ps_s3_metadata_on_master():
     # create objects in the bucket using COPY
     key_name = 'copy_of_foo'
     bucket.copy_key(key_name, bucket.name, key.name)
-    
+
     # create objects in the bucket using multi-part upload
     fp = tempfile.NamedTemporaryFile(mode='w+b')
     chunk_size = 1024*1024*5 # 5MB
@@ -2703,7 +2722,7 @@ def test_ps_s3_versioning_on_master():
             if version not in versions:
                 print('version mismatch: '+version+' not in: '+str(versions))
                 # TODO: copy_key() does not return the version of the copied object
-                #assert False 
+                #assert False
             else:
                 print('version ok: '+version+' in: '+str(versions))
 
@@ -2792,7 +2811,7 @@ def test_ps_s3_versioned_deletion_on_master():
             size = event['s3']['object']['size']
             if version not in versions:
                 print('version mismatch: '+version+' not in: '+str(versions))
-                assert False 
+                assert False
             else:
                 print('version ok: '+version+' in: '+str(versions))
             if event['eventName'] == 'ObjectRemoved:Delete':
@@ -3182,9 +3201,6 @@ def ps_s3_persistent_topic_configs(persistency_time, config_dict):
     host = get_ip()
     port = random.randint(10000, 20000)
 
-    # start an http server in a separate thread
-    http_server = HTTPServerWithEvents((host, port))
-
     # create bucket
     bucket_name = gen_bucket_name()
     bucket = conn.create_bucket(bucket_name)
@@ -3205,9 +3221,6 @@ def ps_s3_persistent_topic_configs(persistency_time, config_dict):
     response, status = s3_notification_conf.set_config()
     assert_equal(status/100, 2)
 
-    delay = 20
-    time.sleep(delay)
-    http_server.close()
     # topic get
     parsed_result = get_topic(topic_name)
     parsed_result_dest = parsed_result["dest"]
@@ -3232,10 +3245,13 @@ def ps_s3_persistent_topic_configs(persistency_time, config_dict):
     print('average time for creation + async http notification is: ' + str(time_diff*1000/number_of_objects) + ' milliseconds')
 
     # topic stats
-    get_stats_persistent_topic(topic_name, number_of_objects)
+    if time_diff > persistency_time:
+        log.warning('persistency time for topic %s already passed. not possible to check object in the queue', topic_name)
+    else:
+        get_stats_persistent_topic(topic_name, number_of_objects)
+        # wait as much as ttl and check if the persistent topics have expired
+        time.sleep(persistency_time)
 
-    # wait as much as ttl and check if the persistent topics have expired
-    time.sleep(persistency_time)
     get_stats_persistent_topic(topic_name, 0)
 
     # delete objects from the bucket
@@ -3247,18 +3263,18 @@ def ps_s3_persistent_topic_configs(persistency_time, config_dict):
         thr = threading.Thread(target = key.delete, args=())
         thr.start()
         client_threads.append(thr)
-        if count%100 == 0:
-            [thr.join() for thr in client_threads]
-            time_diff = time.time() - start_time
-            print('average time for deletion + async http notification is: ' + str(time_diff*1000/number_of_objects) + ' milliseconds')
-            client_threads = []
-            start_time = time.time()
+    [thr.join() for thr in client_threads]
+    time_diff = time.time() - start_time
+    print('average time for deletion + async http notification is: ' + str(time_diff*1000/number_of_objects) + ' milliseconds')
 
     # topic stats
-    get_stats_persistent_topic(topic_name, number_of_objects)
+    if time_diff > persistency_time:
+        log.warning('persistency time for topic %s already passed. not possible to check object in the queue', topic_name)
+    else:
+        get_stats_persistent_topic(topic_name, number_of_objects)
+        # wait as much as ttl and check if the persistent topics have expired
+        time.sleep(persistency_time)
 
-    # wait as much as ttl and check if the persistent topics have expired
-    time.sleep(persistency_time)
     get_stats_persistent_topic(topic_name, 0)
 
     # cleanup
@@ -3266,7 +3282,6 @@ def ps_s3_persistent_topic_configs(persistency_time, config_dict):
     topic_conf.del_config()
     # delete the bucket
     conn.delete_bucket(bucket_name)
-    time.sleep(delay)
 
 def create_persistency_config_string(config_dict):
     str_ret = ""
@@ -3281,7 +3296,7 @@ def test_ps_s3_persistent_topic_configs_ttl():
     """ test persistent topic configurations with time_to_live """
     config_dict = {"time_to_live": 30, "max_retries": "None", "retry_sleep_duration": "None"}
     buffer = 10
-    persistency_time =config_dict["time_to_live"] + buffer
+    persistency_time = config_dict["time_to_live"] + buffer
 
     ps_s3_persistent_topic_configs(persistency_time, config_dict)
 
@@ -3388,7 +3403,7 @@ def test_ps_s3_notification_kafka_idle_behaviour():
     # name is constant for manual testing
     topic_name = bucket_name+'_topic'
     # create consumer on the topic
-   
+
     task, receiver = create_kafka_receiver_thread(topic_name+'_1')
     task.start()
 
@@ -3833,7 +3848,7 @@ def persistent_notification(endpoint_type, conn, account=None):
     task = None
     if endpoint_type == 'http':
         # create random port for the http server
-        host = get_ip_http()
+        host = get_ip()
         port = random.randint(10000, 20000)
         # start an http server in a separate thread
         receiver = HTTPServerWithEvents((host, port))
@@ -4059,7 +4074,7 @@ def test_ps_s3_topic_update():
     amqp_task.start()
     #topic_conf = PSTopic(ps_zone.conn, topic_name,endpoint='amqp://' + hostname,endpoint_args='amqp-exchange=' + exchange + '&amqp-ack-level=none')
     topic_conf = PSTopicS3(conn, topic_name, zonegroup, endpoint_args='amqp-exchange=' + exchange + '&amqp-ack-level=none')
-    
+
     topic_arn = topic_conf.set_config()
     #result, status = topic_conf.set_config()
     #assert_equal(status/100, 2)
@@ -4323,7 +4338,7 @@ def test_ps_s3_multiple_topics_notification():
     keys = list(bucket.list())
     # TODO: use exact match
     verify_s3_records_by_elements(records, keys, exact_match=False)
-    receiver.verify_s3_events(keys, exact_match=False)  
+    receiver.verify_s3_events(keys, exact_match=False)
     result, _ = sub_conf2.get_events()
     parsed_result = json.loads(result)
     for record in parsed_result['Records']:
@@ -4461,7 +4476,7 @@ def test_ps_s3_topic_no_permissions():
     zonegroup = 'default'
     bucket_name = gen_bucket_name()
     topic_name = bucket_name + TOPIC_SUFFIX
-    
+
     # create s3 topic without policy
     endpoint_address = 'amqp://127.0.0.1:7001'
     endpoint_args = 'push-endpoint='+endpoint_address+'&amqp-exchange=amqp.direct&amqp-ack-level=none'
@@ -4507,7 +4522,7 @@ def test_ps_s3_topic_no_permissions():
     s3_notification_conf2 = PSNotificationS3(conn2, bucket_name, topic_conf_list)
     _, status = s3_notification_conf2.set_config()
     assert_equal(status, 200)
-    
+
     try:
         # 2nd user tries to delete the topic
         status = topic_conf2.del_config(topic_arn=topic_arn)
@@ -4561,11 +4576,11 @@ def kafka_security(security_type, mechanism='PLAIN', use_topic_attrs_for_creds=F
         endpoint_args = 'push-endpoint='+endpoint_address+'&kafka-ack-level=broker&use-ssl=true&ca-location='+KAFKA_DIR+'/y-ca.crt'
 
     topic_conf = PSTopicS3(conn, topic_name, zonegroup, endpoint_args=endpoint_args)
-    
+
     # create consumer on the topic
     task, receiver = create_kafka_receiver_thread(topic_name)
     task.start()
-    
+
     topic_arn = topic_conf.set_config()
     # create s3 notification
     notification_name = bucket_name + NOTIFICATION_SUFFIX
@@ -5115,7 +5130,7 @@ def test_ps_s3_data_path_v2_mixed_migration():
     tenants_list.append('')
     # make sure there are no leftover topics
     delete_all_topics(conn, '', get_config_cluster())
-    
+
     # make sure that we start at v2
     zonegroup_modify_feature(enable=True, feature_name=zonegroup_feature_notification_v2)
 
@@ -5411,3 +5426,219 @@ def test_connection_caching():
     conn.delete_bucket(bucket_name)
     receiver_1.close(task_1)
     receiver_2.close(task_2)
+
+
+@attr("http_test")
+def test_topic_migration_to_an_account():
+    """test the topic migration procedure described at
+    https://docs.ceph.com/en/latest/radosgw/account/#migrate-an-existing-user-into-an-account
+    """
+    try:
+        # create an http server for notification delivery
+        host = get_ip()
+        port = random.randint(10000, 20000)
+        http_server = HTTPServerWithEvents((host, port))
+
+        # start with two non-account users
+        # create a new user for "user1" which is going to be migrated to an account
+        user1_conn, user1_arn = another_user()
+        user1_id = user1_arn.split("/")[1]
+        user2_conn = connection()
+        log.info(
+            f"two non-account users with acckeys user1 {user1_conn.access_key} and user2 {user2_conn.access_key}"
+        )
+
+        # create a bucket per user
+        user1_bucket_name = gen_bucket_name()
+        user2_bucket_name = gen_bucket_name()
+        user1_bucket = user1_conn.create_bucket(user1_bucket_name)
+        user2_bucket = user2_conn.create_bucket(user2_bucket_name)
+        log.info(
+            f"one bucket per user {user1_conn.access_key}: {user1_bucket_name} and {user2_conn.access_key}: {user2_bucket_name}"
+        )
+
+        # create an S3 topic owned by the first user
+        topic_name = user1_bucket_name + TOPIC_SUFFIX
+        zonegroup = get_config_zonegroup()
+        endpoint_address = "http://" + host + ":" + str(port)
+        endpoint_args = "push-endpoint=" + endpoint_address + "&persistent=true"
+        expected_topic_arn = "arn:aws:sns:" + zonegroup + "::" + topic_name
+        topic_conf = PSTopicS3(
+            user1_conn, topic_name, zonegroup, endpoint_args=endpoint_args
+        )
+        topic_arn = topic_conf.set_config()
+        assert_equal(topic_arn, expected_topic_arn)
+        log.info(
+            f"{user1_conn.access_key} created the topic {topic_arn} with args {endpoint_args}"
+        )
+
+        # both buckets subscribe to the same and only topic using the same notification id
+        notification_name = user1_bucket_name + NOTIFICATION_SUFFIX
+        topic_conf_list = [
+            {
+                "Id": notification_name,
+                "TopicArn": topic_arn,
+                "Events": ["s3:ObjectCreated:*"],
+            }
+        ]
+        s3_notification_conf1 = PSNotificationS3(
+            user1_conn, user1_bucket_name, topic_conf_list
+        )
+        s3_notification_conf2 = PSNotificationS3(
+            user2_conn, user2_bucket_name, topic_conf_list
+        )
+        _, status = s3_notification_conf1.set_config()
+        assert_equal(status / 100, 2)
+        _, status = s3_notification_conf2.set_config()
+        assert_equal(status / 100, 2)
+        # verify both buckets are subscribed to the topic
+        rgw_topic_entry = [
+            t for t in list_topics()["topics"] if t["name"] == topic_name
+        ]
+        assert_equal(len(rgw_topic_entry), 1)
+        subscribed_buckets = rgw_topic_entry[0]["subscribed_buckets"]
+        assert_equal(len(subscribed_buckets), 2)
+        assert_in(user1_bucket_name, subscribed_buckets)
+        assert_in(user2_bucket_name, subscribed_buckets)
+        log.info(
+            "buckets {user1_bucket_name} and {user2_bucket_name} are subscribed to {topic_arn}"
+        )
+
+        # move user1 to an account
+        account_id = "RGW98765432101234567"
+        cmd = ["account", "create", "--account-id", account_id]
+        _, rc = admin(cmd, get_config_cluster())
+        assert rc == 0, f"failed to create {account_id}: {rc}"
+        cmd = [
+            "user",
+            "modify",
+            "--uid",
+            user1_id,
+            "--account-id",
+            account_id,
+            "--account-root",
+        ]
+        _, rc = admin(cmd, get_config_cluster())
+        assert rc == 0, f"failed to modify {user1_id}: {rc}"
+        log.info(
+            f"{user1_conn.access_key}/{user1_id} is migrated to account {account_id} as root user"
+        )
+
+        # verify the topic is functional
+        user1_bucket.new_key("user1obj1").set_contents_from_string("object content")
+        user2_bucket.new_key("user2obj1").set_contents_from_string("object content")
+        wait_for_queue_to_drain(topic_name, http_port=port)
+        http_server.verify_s3_events(
+            list(user1_bucket.list()) + list(user2_bucket.list()), exact_match=True
+        )
+
+        # create a new account topic with the same name as the existing topic
+        # note that the expected arn now contains the account ID
+        expected_topic_arn = (
+            "arn:aws:sns:" + zonegroup + ":" + account_id + ":" + topic_name
+        )
+        topic_conf = PSTopicS3(
+            user1_conn, topic_name, zonegroup, endpoint_args=endpoint_args
+        )
+        account_topic_arn = topic_conf.set_config()
+        assert_equal(account_topic_arn, expected_topic_arn)
+        log.info(
+            f"{user1_conn.access_key} created the account topic {account_topic_arn} with args {endpoint_args}"
+        )
+
+        # verify that the old topic is still functional
+        user1_bucket.new_key("user1obj1").set_contents_from_string("object content")
+        user2_bucket.new_key("user2obj1").set_contents_from_string("object content")
+        wait_for_queue_to_drain(topic_name, http_port=port)
+        # wait_for_queue_to_drain(topic_name, tenant=account_id, http_port=port)
+        http_server.verify_s3_events(
+            list(user1_bucket.list()) + list(user2_bucket.list()), exact_match=True
+        )
+
+        # change user1 bucket's subscription to the account topic - using the same notification ID but with the new account_topic_arn
+        topic_conf_list = [
+            {
+                "Id": notification_name,
+                "TopicArn": account_topic_arn,
+                "Events": ["s3:ObjectCreated:*"],
+            }
+        ]
+        s3_notification_conf1 = PSNotificationS3(
+            user1_conn, user1_bucket_name, topic_conf_list
+        )
+        _, status = s3_notification_conf1.set_config()
+        assert_equal(status / 100, 2)
+        # verify subscriptions to the account topic
+        rgw_topic_entry = [
+            t
+            for t in list_topics(tenant=account_id)["topics"]
+            if t["name"] == topic_name
+        ]
+        assert_equal(len(rgw_topic_entry), 1)
+        subscribed_buckets = rgw_topic_entry[0]["subscribed_buckets"]
+        assert_equal(len(subscribed_buckets), 1)
+        assert_in(user1_bucket_name, subscribed_buckets)
+        assert_not_in(user2_bucket_name, subscribed_buckets)
+        # verify bucket notifications while 2 test buckets are in the mixed mode
+        notification_list = list_notifications(user1_bucket_name, assert_len=1)
+        assert_equal(notification_list["notifications"][0]["TopicArn"], account_topic_arn)
+        notification_list = list_notifications(user2_bucket_name, assert_len=1)
+        assert_equal(notification_list["notifications"][0]["TopicArn"], topic_arn)
+
+        # verify both topics are functional at the same time with no duplicate notifications
+        user1_bucket.new_key("user1obj1").set_contents_from_string("object content")
+        user2_bucket.new_key("user2obj1").set_contents_from_string("object content")
+        wait_for_queue_to_drain(topic_name, http_port=port)
+        wait_for_queue_to_drain(topic_name, tenant=account_id, http_port=port)
+        http_server.verify_s3_events(
+            list(user1_bucket.list()) + list(user2_bucket.list()), exact_match=True
+        )
+
+        # also change user2 bucket's subscription to the account topic
+        s3_notification_conf2 = PSNotificationS3(
+            user2_conn, user2_bucket_name, topic_conf_list
+        )
+        _, status = s3_notification_conf2.set_config()
+        assert_equal(status / 100, 2)
+        # remove old topic
+        # note that, although account topic has the same name, it has to be scoped by account/tenant id to be removed
+        # so below command will only remove the old topic
+        _, rc = admin(["topic", "rm", "--topic", topic_name], get_config_cluster())
+        assert_equal(rc, 0)
+
+        # now verify account topic serves both buckets
+        rgw_topic_entry = [
+            t
+            for t in list_topics(tenant=account_id)["topics"]
+            if t["name"] == topic_name
+        ]
+        assert_equal(len(rgw_topic_entry), 1)
+        subscribed_buckets = rgw_topic_entry[0]["subscribed_buckets"]
+        assert_equal(len(subscribed_buckets), 2)
+        assert_in(user1_bucket_name, subscribed_buckets)
+        assert_in(user2_bucket_name, subscribed_buckets)
+        # verify bucket notifications after 2 test buckets are updated to use the account topic
+        notification_list = list_notifications(user1_bucket_name, assert_len=1)
+        assert_equal(notification_list["notifications"][0]["TopicArn"], account_topic_arn)
+        notification_list = list_notifications(user2_bucket_name, assert_len=1)
+        assert_equal(notification_list["notifications"][0]["TopicArn"], account_topic_arn)
+
+        # finally, make sure that notifications are going thru via the new account topic
+        user1_bucket.new_key("user1obj1").set_contents_from_string("object content")
+        user2_bucket.new_key("user2obj1").set_contents_from_string("object content")
+        wait_for_queue_to_drain(topic_name, tenant=account_id, http_port=port)
+        http_server.verify_s3_events(
+            list(user1_bucket.list()) + list(user2_bucket.list()), exact_match=True
+        )
+        log.info("topic migration test has completed successfully")
+    finally:
+        admin(["user", "rm", "--uid", user1_id, "--purge-data"], get_config_cluster())
+        admin(
+            ["bucket", "rm", "--bucket", user1_bucket_name, "--purge-data"],
+            get_config_cluster(),
+        )
+        admin(
+            ["bucket", "rm", "--bucket", user2_bucket_name, "--purge-data"],
+            get_config_cluster(),
+        )
+        admin(["account", "rm", "--account-id", account_id], get_config_cluster())

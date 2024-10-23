@@ -118,6 +118,12 @@ using ceph::crypto::MD5;
 #define RGW_ATTR_SOURCE_ZONE    RGW_ATTR_PREFIX "source_zone"
 #define RGW_ATTR_TAGS           RGW_ATTR_PREFIX RGW_AMZ_PREFIX "tagging"
 
+#define RGW_ATTR_CLOUDTIER_STORAGE_CLASS  RGW_ATTR_PREFIX "cloudtier_storage_class"
+#define RGW_ATTR_RESTORE_STATUS   RGW_ATTR_PREFIX "restore-status"
+#define RGW_ATTR_RESTORE_TYPE   RGW_ATTR_PREFIX "restore-type"
+#define RGW_ATTR_RESTORE_TIME   RGW_ATTR_PREFIX "restored-at"
+#define RGW_ATTR_RESTORE_EXPIRY_DATE   RGW_ATTR_PREFIX "restore-expiry-date"
+
 #define RGW_ATTR_TEMPURL_KEY1   RGW_ATTR_META_PREFIX "temp-url-key"
 #define RGW_ATTR_TEMPURL_KEY2   RGW_ATTR_META_PREFIX "temp-url-key-2"
 
@@ -331,7 +337,7 @@ inline constexpr const char* RGW_REST_STS_XMLNS =
 #define ERR_PRESIGNED_URL_DISABLED     2224
 #define ERR_AUTHORIZATION        2225 // SNS 403 AuthorizationError
 
-#define ERR_BUSY_RESHARDING      2300
+#define ERR_BUSY_RESHARDING      2300 // also in cls_rgw_types.h, don't change!
 #define ERR_NO_SUCH_ENTITY       2301
 #define ERR_LIMIT_EXCEEDED       2302
 

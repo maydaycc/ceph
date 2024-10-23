@@ -13,7 +13,10 @@ import { FormatterService } from '~/app/shared/services/formatter.service';
 import { CdValidators } from '~/app/shared/forms/cd-validators';
 import { DimlessBinaryPipe } from '~/app/shared/pipes/dimless-binary.pipe';
 import { HostService } from '~/app/shared/api/host.service';
-import { CdTableFetchDataContext } from '~/app/shared/models/cd-table-fetch-data-context';
+import { map } from 'rxjs/operators';
+import { forkJoin } from 'rxjs';
+import { CephServiceSpec } from '~/app/shared/models/service.interface';
+
 @Component({
   selector: 'cd-nvmeof-listeners-form',
   templateUrl: './nvmeof-listeners-form.component.html',
@@ -28,6 +31,7 @@ export class NvmeofListenersFormComponent implements OnInit {
   listenerForm: CdFormGroup;
   subsystemNQN: string;
   hosts: Array<object> = null;
+  group: string;
 
   constructor(
     public actionLabels: ActionLabelsI18n,
@@ -48,20 +52,36 @@ export class NvmeofListenersFormComponent implements OnInit {
   }
 
   setHosts() {
-    const hostContext = new CdTableFetchDataContext(() => undefined);
-    this.hostService.list(hostContext.toParams(), 'false').subscribe((resp: any[]) => {
-      const nvmeofHosts = resp.filter((r) =>
-        r.service_instances.some((si: any) => si.type === 'nvmeof')
-      );
-      this.hosts = nvmeofHosts.map((h) => ({ hostname: h.hostname, addr: h.addr }));
-    });
+    forkJoin({
+      gwGroups: this.nvmeofService.listGatewayGroups(),
+      hosts: this.hostService.getAllHosts()
+    })
+      .pipe(
+        map(({ gwGroups, hosts }) => {
+          // Find the gateway hosts in current group
+          const selectedGwGroup: CephServiceSpec = gwGroups?.[0]?.find(
+            (gwGroup: CephServiceSpec) => gwGroup?.spec?.group === this.group
+          );
+          const gatewayHosts: string[] = selectedGwGroup?.placement?.hosts;
+          // Return the gateway hosts in current group with their metadata
+          return gatewayHosts
+            ? hosts.filter((host: any) => gatewayHosts.includes(host.hostname))
+            : [];
+        })
+      )
+      .subscribe((nvmeofHosts: any[]) => {
+        this.hosts = nvmeofHosts.map((h) => ({ hostname: h.hostname, addr: h.addr }));
+      });
   }
 
   ngOnInit() {
     this.createForm();
     this.action = this.actionLabels.CREATE;
     this.route.params.subscribe((params: { subsystem_nqn: string }) => {
-      this.subsystemNQN = params.subsystem_nqn;
+      this.subsystemNQN = params?.subsystem_nqn;
+    });
+    this.route.queryParams.subscribe((params) => {
+      this.group = params?.['group'];
     });
     this.setHosts();
   }
@@ -83,7 +103,8 @@ export class NvmeofListenersFormComponent implements OnInit {
     const host = this.listenerForm.getValue('host');
     let trsvcid = Number(this.listenerForm.getValue('trsvcid'));
     if (!trsvcid) trsvcid = 4420;
-    const request = {
+    const request: ListenerRequest = {
+      gw_group: this.group,
       host_name: host.hostname,
       traddr: host.addr,
       trsvcid

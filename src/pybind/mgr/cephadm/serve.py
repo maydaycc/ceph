@@ -96,7 +96,10 @@ class CephadmServe:
                 if not self.mgr.paused:
                     self._run_async_actions()
 
-                    self.mgr.to_remove_osds.process_removal_queue()
+                    removal_queue_result = self.mgr.to_remove_osds.process_removal_queue()
+                    self.log.debug(f'process_removal_queue() returned = {removal_queue_result}')
+                    if removal_queue_result:
+                        continue
 
                     self.mgr.migration.migrate()
                     if self.mgr.migration.is_migration_ongoing():
@@ -482,7 +485,9 @@ class CephadmServe:
         if self.mgr.warn_on_stray_hosts or self.mgr.warn_on_stray_daemons:
             ls = self.mgr.list_servers()
             self.log.debug(ls)
-            managed = self.mgr.cache.get_daemon_names()
+            managed_daemons = self.mgr.cache.get_daemons()
+            stray_filter = self._build_stray_filter(managed_daemons)
+            managed = [d.name() for d in managed_daemons]
             host_detail = []     # type: List[str]
             host_num_daemons = 0
             daemon_detail = []  # type: List[str]
@@ -495,28 +500,8 @@ class CephadmServe:
                 for s in daemons:
                     daemon_id = s.get('id')
                     assert daemon_id
-                    name = '%s.%s' % (s.get('type'), daemon_id)
-                    if s.get('type') in ['rbd-mirror', 'cephfs-mirror', 'rgw', 'rgw-nfs']:
-                        metadata = self.mgr.get_metadata(
-                            cast(str, s.get('type')), daemon_id, {})
-                        assert metadata is not None
-                        try:
-                            if s.get('type') == 'rgw-nfs':
-                                # https://tracker.ceph.com/issues/49573
-                                name = metadata['id'][:-4]
-                            else:
-                                name = '%s.%s' % (s.get('type'), metadata['id'])
-                        except (KeyError, TypeError):
-                            self.log.debug(
-                                "Failed to find daemon id for %s service %s" % (
-                                    s.get('type'), s.get('id')
-                                )
-                            )
-                    if s.get('type') == 'tcmu-runner':
-                        # because we don't track tcmu-runner daemons in the host cache
-                        # and don't have a way to check if the daemon is part of iscsi service
-                        # we assume that all tcmu-runner daemons are managed by cephadm
-                        managed.append(name)
+                    name = self._service_reference_name(s.get('type'), daemon_id)
+                    managed.extend(stray_filter(s.get('type'), daemon_id, name))
                     # Don't mark daemons we just created/removed in the last minute as stray.
                     # It may take some time for the mgr to become aware the daemon
                     # had been created/removed.
@@ -538,6 +523,52 @@ class CephadmServe:
             if self.mgr.warn_on_stray_daemons and daemon_detail:
                 self.mgr.set_health_warning(
                     'CEPHADM_STRAY_DAEMON', f'{len(daemon_detail)} stray daemon(s) not managed by cephadm', len(daemon_detail), daemon_detail)
+
+    def _service_reference_name(self, service_type: str, daemon_id: str) -> str:
+        if service_type not in ['rbd-mirror', 'cephfs-mirror', 'rgw', 'rgw-nfs']:
+            name = f'{service_type}.{daemon_id}'
+            return name
+
+        metadata = self.mgr.get_metadata(service_type, daemon_id, {})
+        assert metadata is not None
+        try:
+            if service_type == 'rgw-nfs':
+                # https://tracker.ceph.com/issues/49573
+                name = metadata['id'][:-4]
+            else:
+                name = '%s.%s' % (service_type, metadata['id'])
+        except (KeyError, TypeError):
+            self.log.debug(
+                "Failed to find daemon id for %s service %s" % (
+                    service_type, daemon_id
+                )
+            )
+        return name
+
+    def _build_stray_filter(
+        self, managed: List[orchestrator.DaemonDescription]
+    ) -> Callable[[str, str, str], List[str]]:
+        svcs = {
+            daemon_type_to_service(cast(str, dd.daemon_type))
+            for dd in managed
+        }
+        _services = [self.mgr.cephadm_services[dt] for dt in svcs]
+
+        def _filter(
+            service_type: str, daemon_id: str, name: str
+        ) -> List[str]:
+            if service_type == 'tcmu-runner':
+                # because we don't track tcmu-runner daemons in the host cache
+                # and don't have a way to check if the daemon is part of iscsi service
+                # we assume that all tcmu-runner daemons are managed by cephadm
+                return [name]
+            out = []
+            for svc in _services:
+                if svc.ignore_possible_stray(service_type, daemon_id, name):
+                    out.append(name)
+            return out
+
+        return _filter
 
     def _check_for_moved_osds(self) -> None:
         self.log.debug('_check_for_moved_osds')
@@ -663,7 +694,11 @@ class CephadmServe:
         for s in self.mgr.cache.get_daemons_by_service(rgw_spec.service_name()):
             if s.ports:
                 for p in s.ports:
-                    ep.append(f'{protocol}://{s.hostname}:{p}')
+                    if s.hostname is not None:
+                        host_addr = self.mgr.inventory.get_addr(s.hostname)
+                        ep.append(f'{protocol}://{host_addr}:{p}')
+                    else:
+                        logger.error("Hostname is None for service: %s", s)
         zone_update_cmd = {
             'prefix': 'rgw zone modify',
             'realm_name': rgw_spec.rgw_realm,
@@ -917,6 +952,10 @@ class CephadmServe:
                         f'Not deploying node-proxy agent on {slot.hostname} as oob details are not present.'
                     )
                     continue
+
+                # set multisite config before deploying the rgw daemon
+                if service_type == 'rgw':
+                    self.mgr.rgw_service.set_realm_zg_zone(cast(RGWSpec, spec))
 
                 # deploy new daemon
                 daemon_id = slot.name

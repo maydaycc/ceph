@@ -294,9 +294,7 @@ ClientRequest::recover_missing_snaps(
   ObjectContextRef head,
   std::set<snapid_t> &snaps)
 {
-  LOG_PREFIX(ClientRequest::process_op);
-  co_await ihref.enter_stage<interruptor>(
-    client_pp(*pg).recover_missing_snaps, *this);
+  LOG_PREFIX(ClientRequest::recover_missing_snaps);
   for (auto &snap : snaps) {
     auto coid = head->obs.oi.soid;
     coid.snap = snap;
@@ -310,9 +308,9 @@ ClientRequest::recover_missing_snaps(
     if (oid) {
       auto unfound = co_await do_recover_missing(pg, *oid, m->get_reqid());
       if (unfound) {
-        DEBUGDPP("{} unfound, hang it for now", *pg, m->get_hobj().get_head());
+        DEBUGDPP("{} unfound, hang it for now", *pg, *oid);
         co_await interruptor::make_interruptible(
-          pg->get_recovery_backend()->add_unfound(m->get_hobj().get_head()));
+          pg->get_recovery_backend()->add_unfound(*oid));
       }
     }
   }
@@ -323,9 +321,7 @@ ClientRequest::process_op(
   instance_handle_t &ihref, Ref<PG> pg, unsigned this_instance_id)
 {
   LOG_PREFIX(ClientRequest::process_op);
-  co_await ihref.enter_stage<interruptor>(
-    client_pp(*pg).recover_missing, *this
-  );
+  ihref.enter_stage_sync(client_pp(*pg).recover_missing, *this);
   if (!pg->is_primary()) {
     DEBUGDPP(
       "Skipping recover_missings on non primary pg for soid {}",
@@ -341,9 +337,6 @@ ClientRequest::process_op(
 
     std::set<snapid_t> snaps = snaps_need_to_recover();
     if (!snaps.empty()) {
-      // call with_obc() in order, but wait concurrently for loading.
-      ihref.enter_stage_sync(
-          client_pp(*pg).recover_missing_lock_obc, *this);
       auto with_obc = pg->obc_loader.with_obc<RWState::RWREAD>(
         m->get_hobj().get_head(),
         [&snaps, &ihref, pg, this](auto head, auto) {
@@ -356,6 +349,16 @@ ClientRequest::process_op(
     }
   }
 
+  /**
+   * The previous stage of recover_missing is a concurrent phase.
+   * Checking for already_complete requests must done exclusively.
+   * Since get_obc is also an exclusive stage, we can merge both stages into
+   * a single stage and avoid stage switching overhead.
+   */
+  DEBUGDPP("{}.{}: entering check_already_complete_get_obc",
+	   *pg, *this, this_instance_id);
+  co_await ihref.enter_stage<interruptor>(
+    client_pp(*pg).check_already_complete_get_obc, *this);
   DEBUGDPP("{}.{}: checking already_complete",
 	   *pg, *this, this_instance_id);
   auto completed = co_await pg->already_complete(m->get_reqid());
@@ -374,11 +377,7 @@ ClientRequest::process_op(
     co_return;
   }
 
-  DEBUGDPP("{}.{}: not completed, entering get_obc stage",
-	   *pg, *this, this_instance_id);
-  co_await ihref.enter_stage<interruptor>(client_pp(*pg).get_obc, *this);
-
-  DEBUGDPP("{}.{}: entered get_obc stage, about to wait_scrub",
+  DEBUGDPP("{}.{}: not completed, about to wait_scrub",
 	   *pg, *this, this_instance_id);
   co_await ihref.enter_blocker(
     *this, pg->scrubber, &decltype(pg->scrubber)::wait_scrub,
@@ -404,11 +403,6 @@ ClientRequest::process_op(
 		   *pg, *this, this_instance_id);
 	  return do_process(
 	    ihref, pg, obc, this_instance_id
-	  ).handle_error_interruptible(
-	    crimson::ct_error::eagain::handle(
-	      [this, pg, this_instance_id, &ihref]() mutable {
-		return process_op(ihref, pg, this_instance_id);
-	      })
 	  );
 	}
       );
@@ -438,7 +432,7 @@ ClientRequest::process_op(
   co_await std::move(process);
 }
 
-ClientRequest::do_process_iertr::future<>
+ClientRequest::interruptible_future<>
 ClientRequest::do_process(
   instance_handle_t &ihref,
   Ref<PG> pg, crimson::osd::ObjectContextRef obc,
@@ -508,22 +502,128 @@ ClientRequest::do_process(
     co_return;
   }
 
-  auto [submitted, all_completed] = co_await pg->do_osd_ops(
-    m, r_conn, obc, op_info, snapc
+  OpsExecuter ox(pg, obc, op_info, *m, r_conn, snapc);
+  auto ret = co_await pg->run_executer(
+    ox, obc, op_info, m->ops
+  ).si_then([]() -> std::optional<std::error_code> {
+    return std::nullopt;
+  }).handle_error_interruptible(crimson::ct_error::all_same_way(
+    [](auto e) -> std::optional<std::error_code> {
+      return e;
+    })
   );
-  co_await std::move(submitted);
 
-  co_await ihref.enter_stage<interruptor>(client_pp(*pg).wait_repop, *this);
+  auto should_log_error = [](std::error_code e) -> bool {
+    switch (e.value()) {
+    case EDQUOT:
+    case ENOSPC:
+    case EAGAIN:
+      return false;
+    default:
+      return true;
+    }
+  };
 
-  auto reply = co_await std::move(all_completed);
+  if (ret && !should_log_error(*ret)) {
+    co_await reply_op_error(pg, -ret->value());
+    co_return;
+  }
+
+  {
+    auto all_completed = interruptor::now();
+    if (ret) {
+      assert(should_log_error(*ret));
+      if (op_info.may_write()) {
+	auto rep_tid = pg->shard_services.get_tid();
+	auto version = co_await pg->submit_error_log(
+	  m, op_info, obc, *ret, rep_tid);
+
+	all_completed = pg->complete_error_log(
+	  rep_tid, version);
+      }
+      // simply return the error below, leaving all_completed alone
+    } else {
+      auto submitted = interruptor::now();
+      std::tie(submitted, all_completed) = co_await pg->submit_executer(
+	std::move(ox), m->ops);
+      co_await std::move(submitted);
+    }
+    co_await ihref.enter_stage<interruptor>(client_pp(*pg).wait_repop, *this);
+
+    co_await std::move(all_completed);
+  }
 
   co_await ihref.enter_stage<interruptor>(client_pp(*pg).send_reply, *this);
-  DEBUGDPP("{}.{}: sending response",
-	   *pg, *this, this_instance_id);
-  // TODO: gate the crosscore sending
-  co_await interruptor::make_interruptible(
-    get_foreign_connection().send_with_throttling(std::move(reply))
-  );
+
+  if (ret) {
+    int err = -ret->value();
+    DEBUGDPP("{}: replying with error {}", *pg, *this, err);
+
+    auto reply = crimson::make_message<MOSDOpReply>(
+      m.get(), err, pg->get_osdmap_epoch(), 0, false);
+
+    if (!m->ops.empty() && m->ops.back().op.flags & CEPH_OSD_OP_FLAG_FAILOK) {
+      reply->set_result(0);
+    }
+
+    // For all ops except for CMPEXT, the correct error value is encoded
+    // in e. For CMPEXT, osdop.rval has the actual error value.
+    if (err == -ct_error::cmp_fail_error_value) {
+      assert(!m->ops.empty());
+      for (auto &osdop : m->ops) {
+	if (osdop.rval < 0) {
+	  reply->set_result(osdop.rval);
+	  break;
+	}
+      }
+    }
+
+    reply->set_enoent_reply_versions(
+      pg->peering_state.get_info().last_update,
+      pg->peering_state.get_info().last_user_version);
+    reply->add_flags(CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
+    
+    // TODO: gate the crosscore sending
+    co_await interruptor::make_interruptible(
+      get_foreign_connection().send_with_throttling(std::move(reply)));
+  } else {
+    int result = m->ops.empty() ? 0 : m->ops.back().rval.code;
+    if (op_info.may_read() && result >= 0) {
+      for (auto &osdop : m->ops) {
+	if (osdop.rval < 0 && !(osdop.op.flags & CEPH_OSD_OP_FLAG_FAILOK)) {
+	  result = osdop.rval.code;
+	  break;
+	}
+      }
+    } else if (result > 0 && op_info.may_write() && !op_info.allows_returnvec()) {
+      result = 0;
+    } else if (result < 0 &&
+	     (m->ops.empty() ?
+	      0 : m->ops.back().op.flags & CEPH_OSD_OP_FLAG_FAILOK)) {
+      result = 0;
+    }
+    auto reply = crimson::make_message<MOSDOpReply>(
+      m.get(),
+      result,
+      pg->get_osdmap_epoch(),
+      0,
+      false);
+    reply->add_flags(CEPH_OSD_FLAG_ACK | CEPH_OSD_FLAG_ONDISK);
+    if (obc->obs.exists) {
+      reply->set_reply_versions(pg->peering_state.get_info().last_update,
+				obc->obs.oi.user_version);
+    } else {
+      reply->set_reply_versions(pg->peering_state.get_info().last_update,
+				pg->peering_state.get_info().last_user_version);
+    }
+    
+    DEBUGDPP("{}.{}: sending response {}",
+	     *pg, *this, this_instance_id, *m);
+    // TODO: gate the crosscore sending
+    co_await interruptor::make_interruptible(
+      get_foreign_connection().send_with_throttling(std::move(reply))
+    );
+  }
 }
 
 bool ClientRequest::is_misdirected(const PG& pg) const

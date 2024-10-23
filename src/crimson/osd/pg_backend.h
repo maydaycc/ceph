@@ -60,9 +60,10 @@ public:
   using interruptible_future =
     ::crimson::interruptible::interruptible_future<
       ::crimson::osd::IOInterruptCondition, T>;
-  using rep_op_fut_t =
+  using rep_op_ret_t = 
     std::tuple<interruptible_future<>,
 	       interruptible_future<crimson::osd::acked_peers_t>>;
+  using rep_op_fut_t = interruptible_future<rep_op_ret_t>;
   PGBackend(shard_id_t shard, CollectionRef coll,
             crimson::osd::ShardServices &shard_services,
             DoutPrefixProvider &dpp);
@@ -220,14 +221,6 @@ public:
     ceph::os::Transaction& trans,
     osd_op_params_t& osd_op_params,
     object_stat_sum_t& delta_stats);
-  rep_op_fut_t mutate_object(
-    std::set<pg_shard_t> pg_shards,
-    crimson::osd::ObjectContextRef &&obc,
-    ceph::os::Transaction&& txn,
-    osd_op_params_t&& osd_op_p,
-    epoch_t min_epoch,
-    epoch_t map_epoch,
-    std::vector<pg_log_entry_t>&& log_entries);
 
   /**
    * list_objects
@@ -418,6 +411,13 @@ public:
     ceph::os::Transaction& trans,
     osd_op_params_t& osd_op_params,
     object_stat_sum_t& delta_stats);
+  virtual rep_op_fut_t
+  submit_transaction(const std::set<pg_shard_t> &pg_shards,
+		     const hobject_t& hoid,
+		     ceph::os::Transaction&& txn,
+		     osd_op_params_t&& osd_op_p,
+		     epoch_t min_epoch, epoch_t max_epoch,
+		     std::vector<pg_log_entry_t>&& log_entries) = 0;
 
   virtual void got_rep_op_reply(const MOSDRepOpReply&) {}
   virtual seastar::future<> stop() = 0;
@@ -475,13 +475,6 @@ private:
     object_stat_sum_t& delta_stats,
     object_info_t& oi,
     uint64_t truncate_size);
-  virtual rep_op_fut_t
-  _submit_transaction(std::set<pg_shard_t>&& pg_shards,
-		      const hobject_t& hoid,
-		      ceph::os::Transaction&& txn,
-		      osd_op_params_t&& osd_op_p,
-		      epoch_t min_epoch, epoch_t max_epoch,
-		      std::vector<pg_log_entry_t>&& log_entries) = 0;
   friend class ReplicatedRecoveryBackend;
   friend class ::crimson::osd::PG;
 

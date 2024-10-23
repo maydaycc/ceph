@@ -16,6 +16,23 @@ else:  # pragma: no cover
 class CephFSStorageProvider(_StrEnum):
     KERNEL_MOUNT = 'kcephfs'
     SAMBA_VFS = 'samba-vfs'
+    SAMBA_VFS_CLASSIC = 'samba-vfs/classic'
+    SAMBA_VFS_NEW = 'samba-vfs/new'
+
+    def expand(self) -> 'CephFSStorageProvider':
+        """Expand abbreviated/default values into the full/expanded form."""
+        if self is self.SAMBA_VFS:
+            # mypy gets confused by enums
+            return self.__class__(self.SAMBA_VFS_NEW)
+        return self
+
+    def is_vfs(self) -> bool:
+        """Return true if value is a samba vfs provider."""
+        return self in {
+            self.SAMBA_VFS,
+            self.SAMBA_VFS_CLASSIC,
+            self.SAMBA_VFS_NEW,
+        }
 
 
 class SubSystem(_StrEnum):
@@ -72,8 +89,14 @@ class LoginAccess(_StrEnum):
     def expand(self) -> 'LoginAccess':
         """Exapend abbreviated enum values into their full forms."""
         # the extra LoginAccess(...) calls are to appease mypy
-        if self == self.READ_ONLY_SHORT:
+        if self is self.READ_ONLY_SHORT:
             return LoginAccess(self.READ_ONLY)
-        if self == self.READ_WRITE_SHORT:
+        if self is self.READ_WRITE_SHORT:
             return LoginAccess(self.READ_WRITE)
         return self
+
+
+class SMBClustering(_StrEnum):
+    DEFAULT = 'default'
+    ALWAYS = 'always'
+    NEVER = 'never'

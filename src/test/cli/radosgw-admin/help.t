@@ -88,6 +88,7 @@
     realm rename                     rename a realm
     realm set                        set realm info (requires infile)
     realm default                    set realm as default
+    realm default rm                 clear the current default realm
     realm pull                       pull a realm and its current period
     zonegroup add                    add a zone to a zonegroup
     zonegroup create                 create a new zone group info
@@ -182,6 +183,8 @@
     reshard cancel                   cancel resharding a bucket
     reshard stale-instances list     list stale-instances from bucket resharding
     reshard stale-instances delete   cleanup stale-instances from bucket resharding
+    reshardlog list                  list bucket resharding log
+    reshardlog purge                 trim bucket resharding log
     sync error list                  list sync error
     sync error trim                  trim sync error
     mfa create                       create a new MFA TOTP token

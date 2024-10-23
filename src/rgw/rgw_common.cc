@@ -872,7 +872,17 @@ int RGWHTTPArgs::parse(const DoutPrefixProvider *dpp)
         });
       }
       string& val = nv.get_val();
-      ldpp_dout(dpp, 10) << "name: " << name << " val: " << val << dendl;
+      static constexpr std::initializer_list<const char*>
+          sensitive_keyword_list = {"password"};
+      bool is_sensitive = false;
+      for (const auto& key : sensitive_keyword_list) {
+        if (name.find(key) != std::string::npos) {
+          is_sensitive = true;
+          break;
+        }
+      }
+      ldpp_dout(dpp, 10) << "name: " << name
+                         << " val: " << (is_sensitive ? "****" : val) << dendl;
       append(name, val);
     }
 
@@ -2300,7 +2310,6 @@ void RGWBucketInfo::encode(bufferlist& bl) const {
     encode(empty, bl);
   }
   ceph::versioned_variant::encode(owner, bl); // v24
-
   ENCODE_FINISH(bl);
 }
 
@@ -2564,7 +2573,6 @@ void RGWBucketInfo::decode_json(JSONObj *obj) {
   int rs;
   JSONDecoder::decode_json("reshard_status", rs, obj);
   reshard_status = (cls_rgw_reshard_status)rs;
-
   rgw_sync_policy_info sp;
   JSONDecoder::decode_json("sync_policy", sp, obj);
   if (!sp.empty()) {

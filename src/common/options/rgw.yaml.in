@@ -448,6 +448,19 @@ options:
   services:
   - rgw
   with_legacy: true
+- name: rgw_restore_debug_interval
+  type: int
+  level: dev
+  desc: The number of seconds that simulate one "day" in order to debug RGW CloudRestore.
+    Do *not* modify for a production cluster.
+  long_desc: For debugging RGW Cloud Restore, the number of seconds that are equivalent to
+    one simulated "day". Values less than 1 are ignored and do not change Restore behavior.
+    For example, during debugging if one wanted every 10 minutes to be equivalent to one day,
+    then this would be set to 600, the number of seconds in 10 minutes.
+  default: -1
+  services:
+  - rgw
+  with_legacy: true
 - name: rgw_mp_lock_max_time
   type: int
   level: advanced
@@ -780,16 +793,6 @@ options:
   desc: Keystone barbican user domain.
   fmt_desc: The name of the OpenStack domain associated with the `Barbican`_
     user when using OpenStack Identity API v3.
-  services:
-  - rgw
-  with_legacy: true
-- name: rgw_keystone_api_version
-  type: int
-  level: advanced
-  desc: Version of Keystone API to use (2 or 3).
-  fmt_desc: The version (2 or 3) of OpenStack Identity API that should be
-    used for communication with the Keystone server.
-  default: 2
   services:
   - rgw
   with_legacy: true
@@ -1875,6 +1878,18 @@ options:
   services:
   - rgw
   with_legacy: true
+- name: rgw_graceful_stop
+  type: bool
+  level: advanced
+  desc: Delay the shutdown until all outstanding requests have completed
+  long_desc: Wait for up to `rgw_exit_timeout_secs` for all outstanding requests to complete
+    before exiting unconditionally. (new HTTP requests will not be accepted during this time.)
+  default: false
+  services:
+  - rgw
+  see_also:
+  - rgw_exit_timeout_secs
+  with_legacy: true
 - name: rgw_get_obj_window_size
   type: size
   level: advanced
@@ -2073,14 +2088,6 @@ options:
   fmt_desc: The number of shards (objects) on which to keep the
     data changes log.
   default: 128
-  services:
-  - rgw
-  with_legacy: true
-- name: rgw_data_log_obj_prefix
-  type: str
-  level: dev
-  default: data_log
-  fmt_desc: The object name prefix for the data log.
   services:
   - rgw
   with_legacy: true
@@ -2711,6 +2718,36 @@ options:
   with_legacy: true
   services:
   - rgw
+- name: rgw_reshard_progress_judge_interval
+  type: uint
+  level: dev
+  desc: interval (in seconds) of judging if bucket reshard failed in block state
+  default: 120
+  services:
+  - rgw
+- name: rgw_reshard_progress_judge_ratio
+  type: float
+  level: dev
+  desc: ratio of reshard progress judge interval to randomly vary
+  long_desc: Add a random delay to rgw_reshard_progress_judge_interval for deciding when
+    to judge the reshard process. The default setting spreads judge time window of
+    [1, 1.5] * rgw_reshard_progress_judge_interval.
+  default: 0.5
+  services:
+  - rgw
+  see_also:
+  - rgw_reshard_progress_judge_interval
+- name: rgw_reshardlog_threshold
+  type: uint
+  level: dev
+  desc: threshold for a shard to record log before blocking writes
+  default: 30000
+  with_legacy: true
+  services:
+  - rgw
+  - osd
+  see_also:
+  - rgw_reshard_progress_judge_interval
 - name: rgw_debug_inject_set_olh_err
   type: uint
   level: dev
@@ -3438,11 +3475,11 @@ options:
 - name: rgw_max_listing_results
   type: uint
   level: advanced
-  desc: Upper bound on results in listing operations, ListBucket max-keys
+  desc: Upper bound on results in listing operations, ListObjects max-keys
   long_desc: This caps the maximum permitted value for listing-like operations in
-    RGW S3. Affects ListBucket(max-keys), ListBucketVersions(max-keys), ListBucketMultipartUploads(max-uploads),
-    ListMultipartUploadParts(max-parts)
-  default: 1000
+    RGW S3. Affects ListObjects(max-keys), ListObjectsVersions(max-keys),
+    ListMultipartUploads(max-uploads), ListParts(max-parts)
+  default: 5000
   services:
   - rgw
   - rgw

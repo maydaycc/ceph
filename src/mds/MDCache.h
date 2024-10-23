@@ -118,6 +118,10 @@ enum {
   l_mdss_ireq_fragstats,
   l_mdss_ireq_inodestats,
 
+  l_mdc_uninline_started,
+  l_mdc_uninline_succeeded,
+  l_mdc_uninline_write_failed,
+
   l_mdc_last,
 };
 
@@ -1094,6 +1098,8 @@ private:
   void repair_dirfrag_stats(CDir *dir);
   void rdlock_dirfrags_stats(CInode *diri, MDSInternalContext *fin);
 
+  void uninline_data_work(MDRequestRef mdr);
+
   // my leader
   MDSRank *mds;
 
@@ -1442,6 +1448,8 @@ private:
   friend class C_MDC_FragmentCommit;
   friend class C_MDC_FragmentRollback;
   friend class C_IO_MDC_FragmentPurgeOld;
+  friend class C_IO_DataUninlined;
+  friend class C_MDC_DataUninlinedSubmitted;
 
   // -- subtrees --
   static const unsigned int SUBTREES_COUNT_THRESHOLD = 5;
@@ -1477,7 +1485,7 @@ private:
   void fragment_frozen(const MDRequestRef& mdr, int r);
   void fragment_unmark_unfreeze_dirs(const std::vector<CDir*>& dirs);
   void fragment_drop_locks(fragment_info_t &info);
-  void fragment_maybe_finish(const fragment_info_iterator& it);
+  fragment_info_iterator fragment_maybe_finish(const fragment_info_iterator it);
   void dispatch_fragment_dir(const MDRequestRef& mdr, bool abort_if_freezing=false);
   void _fragment_logged(const MDRequestRef& mdr);
   void _fragment_stored(const MDRequestRef& mdr);

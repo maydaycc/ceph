@@ -1,4 +1,4 @@
-import { Component, Input, OnChanges, OnInit } from '@angular/core';
+import { Component, Input, OnInit } from '@angular/core';
 import { Router } from '@angular/router';
 import { NvmeofService } from '~/app/shared/api/nvmeof.service';
 import { CriticalConfirmationModalComponent } from '~/app/shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
@@ -11,7 +11,7 @@ import { FinishedTask } from '~/app/shared/models/finished-task';
 import { NvmeofListener } from '~/app/shared/models/nvmeof';
 import { Permission } from '~/app/shared/models/permissions';
 import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
-import { ModalService } from '~/app/shared/services/modal.service';
+import { ModalCdsService } from '~/app/shared/services/modal-cds.service';
 import { TaskWrapperService } from '~/app/shared/services/task-wrapper.service';
 
 const BASE_URL = 'block/nvmeof/subsystems';
@@ -21,9 +21,11 @@ const BASE_URL = 'block/nvmeof/subsystems';
   templateUrl: './nvmeof-listeners-list.component.html',
   styleUrls: ['./nvmeof-listeners-list.component.scss']
 })
-export class NvmeofListenersListComponent implements OnInit, OnChanges {
+export class NvmeofListenersListComponent implements OnInit {
   @Input()
   subsystemNQN: string;
+  @Input()
+  group: string;
 
   listenerColumns: any;
   tableActions: CdTableAction[];
@@ -33,7 +35,7 @@ export class NvmeofListenersListComponent implements OnInit, OnChanges {
 
   constructor(
     public actionLabels: ActionLabelsI18n,
-    private modalService: ModalService,
+    private modalService: ModalCdsService,
     private authStorageService: AuthStorageService,
     private taskWrapper: TaskWrapperService,
     private nvmeofService: NvmeofService,
@@ -64,23 +66,19 @@ export class NvmeofListenersListComponent implements OnInit, OnChanges {
         permission: 'create',
         icon: Icons.add,
         click: () =>
-          this.router.navigate([
-            BASE_URL,
-            { outlets: { modal: [URLVerbs.CREATE, this.subsystemNQN, 'listener'] } }
-          ]),
+          this.router.navigate(
+            [BASE_URL, { outlets: { modal: [URLVerbs.CREATE, this.subsystemNQN, 'listener'] } }],
+            { queryParams: { group: this.group } }
+          ),
         canBePrimary: (selection: CdTableSelection) => !selection.hasSelection
       },
       {
         name: this.actionLabels.DELETE,
         permission: 'delete',
         icon: Icons.destroy,
-        click: () => this.deleteSubsystemModal()
+        click: () => this.deleteListenerModal()
       }
     ];
-  }
-
-  ngOnChanges() {
-    this.listListeners();
   }
 
   updateSelection(selection: CdTableSelection) {
@@ -89,7 +87,7 @@ export class NvmeofListenersListComponent implements OnInit, OnChanges {
 
   listListeners() {
     this.nvmeofService
-      .listListeners(this.subsystemNQN)
+      .listListeners(this.subsystemNQN, this.group)
       .subscribe((listResponse: NvmeofListener[]) => {
         this.listeners = listResponse.map((listener, index) => {
           listener['id'] = index;
@@ -99,7 +97,7 @@ export class NvmeofListenersListComponent implements OnInit, OnChanges {
       });
   }
 
-  deleteSubsystemModal() {
+  deleteListenerModal() {
     const listener = this.selection.first();
     this.modalService.show(CriticalConfirmationModalComponent, {
       itemDescription: 'Listener',

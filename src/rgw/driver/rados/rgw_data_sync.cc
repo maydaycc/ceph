@@ -1646,13 +1646,13 @@ class RGWDataFullSyncSingleEntryCR : public RGWCoroutine {
 
 public:
   RGWDataFullSyncSingleEntryCR(RGWDataSyncCtx *_sc, const rgw_pool& _pool, const rgw_bucket_shard& _source_bs,
-                      const std::string& _key, const rgw_data_sync_status& sync_status, const rgw_raw_obj& _error_repo,
+                      const std::string& _key, const rgw_data_sync_status& _sync_status, const rgw_raw_obj& _error_repo,
                       ceph::real_time _timestamp, boost::intrusive_ptr<const RGWContinuousLeaseCR> _lease_cr,
                       boost::intrusive_ptr<rgw::bucket_sync::Cache> _bucket_shard_cache,
                       RGWDataSyncShardMarkerTrack* _marker_tracker,
                       RGWSyncTraceNodeRef& _tn)
     : RGWCoroutine(_sc->cct), sc(_sc), sync_env(_sc->env), pool(_pool), source_bs(_source_bs), key(_key),
-      error_repo(_error_repo), timestamp(_timestamp), lease_cr(std::move(_lease_cr)),
+      sync_status(_sync_status), error_repo(_error_repo), timestamp(_timestamp), lease_cr(std::move(_lease_cr)),
       bucket_shard_cache(_bucket_shard_cache), marker_tracker(_marker_tracker), tn(_tn) {
         error_inject = (sync_env->cct->_conf->rgw_sync_data_full_inject_err_probability > 0);
       }
@@ -1702,8 +1702,12 @@ public:
                       lease_cr, bucket_shard_cache, nullptr, error_repo, tn, false);
           tn->log(10, SSTR("full sync: syncing shard_id " << sid << " of gen " << each->gen));
           if (first_shard) {
-            yield call(shard_cr);
             first_shard = false;
+            yield call(shard_cr);
+            if (retcode < 0) {
+              drain_all();
+              return set_cr_error(retcode);
+            }
           } else {
             yield_spawn_window(shard_cr, sc->lcc.adj_concurrency(cct->_conf->rgw_data_sync_spawn_window),
                               [&](uint64_t stack_id, int ret) {
@@ -1862,12 +1866,7 @@ public:
 				 error_repo, entry_timestamp, lease_cr,
 				 bucket_shard_cache, &*marker_tracker, tn),
 			       sc->lcc.adj_concurrency(cct->_conf->rgw_data_sync_spawn_window),
-			       [&](uint64_t stack_id, int ret) {
-                                if (ret < 0) {
-                                  retcode = ret;
-                                }
-                                return retcode;
-                                });
+             std::nullopt);
           }
           sync_marker.marker = iter->first;
         }
@@ -2551,6 +2550,7 @@ public:
       }
 
       notify_stack->cancel();
+      drain_all();
 
       return set_cr_done();
     }
@@ -3120,11 +3120,19 @@ public:
   RGWDataSyncModule *get_data_handler() override {
     return &data_handler;
   }
-  RGWMetadataHandler *alloc_bucket_meta_handler(librados::Rados& rados) override {
-    return RGWArchiveBucketMetaHandlerAllocator::alloc(rados);
+  auto alloc_bucket_meta_handler(librados::Rados& rados,
+                                 RGWSI_Bucket* svc_bucket,
+                                 RGWBucketCtl* ctl_bucket)
+      -> std::unique_ptr<RGWMetadataHandler> override {
+    return create_archive_bucket_metadata_handler(rados, svc_bucket, ctl_bucket);
   }
-  RGWBucketInstanceMetadataHandlerBase *alloc_bucket_instance_meta_handler(rgw::sal::Driver* driver) override {
-    return RGWArchiveBucketInstanceMetaHandlerAllocator::alloc(driver);
+  auto alloc_bucket_instance_meta_handler(rgw::sal::Driver* driver,
+                                          RGWSI_Zone* svc_zone,
+                                          RGWSI_Bucket* svc_bucket,
+                                          RGWSI_BucketIndex* svc_bi)
+      -> std::unique_ptr<RGWMetadataHandler> override {
+    return create_archive_bucket_instance_metadata_handler(
+        driver, svc_zone, svc_bucket, svc_bi);
   }
 };
 
@@ -6044,12 +6052,13 @@ int RGWSyncBucketCR::operate(const DoutPrefixProvider *dpp)
               } else {
                 tn->log(20, SSTR("logged prev gen entry (bucket=" << source_bs.bucket << ", shard_id=" << source_bs.shard_id << ", gen=" << current_gen << " in error repo: retcode=" << retcode));
 	      }
-	    }
+	    } else {
             retcode = -EAGAIN;
             tn->log(10, SSTR("ERROR: requested sync of future generation "
                              << *gen << " > " << current_gen
                              << ", returning " << retcode << " for later retry"));
             return set_cr_error(retcode);
+            }
           } else if (*gen < current_gen) {
             tn->log(10, SSTR("WARNING: requested sync of past generation "
                              << *gen << " < " << current_gen

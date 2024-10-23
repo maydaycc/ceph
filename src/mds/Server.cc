@@ -3594,8 +3594,8 @@ CInode* Server::prepare_new_inode(const MDRequestRef& mdr, CDir *dir, inodeno_t 
   const cref_t<MClientRequest> &req = mdr->client_request;
 
   dout(10) << "copying fscrypt_auth len " << req->fscrypt_auth.size() << dendl;
-  _inode->fscrypt_auth = req->fscrypt_auth;
-  _inode->fscrypt_file = req->fscrypt_file;
+  _inode->fscrypt_auth.assign(req->fscrypt_auth.begin(), req->fscrypt_auth.end());
+  _inode->fscrypt_file.assign(req->fscrypt_file.begin(), req->fscrypt_file.end());
 
   if (req->get_data().length()) {
     auto p = req->get_data().cbegin();
@@ -4106,6 +4106,7 @@ CDir* Server::try_open_auth_dirfrag(CInode *diri, frag_t fg, const MDRequestRef&
 void Server::handle_client_getattr(const MDRequestRef& mdr, bool is_lookup)
 {
   const cref_t<MClientRequest> &req = mdr->client_request;
+  client_t client = mdr->get_client();
 
   if (req->get_filepath().depth() == 0 && is_lookup) {
     // refpath can't be empty for lookup but it can for
@@ -4127,6 +4128,17 @@ void Server::handle_client_getattr(const MDRequestRef& mdr, bool is_lookup)
     if (r > 0)
       return; // delayed
 
+    // Do not batch if any xlock is held
+    if (!r) {
+      CInode *in = mdr->in[0];
+      if (((mask & CEPH_CAP_LINK_SHARED) && (in->linklock.is_xlocked_by_client(client))) ||
+          ((mask & CEPH_CAP_AUTH_SHARED) && (in->authlock.is_xlocked_by_client(client))) ||
+          ((mask & CEPH_CAP_XATTR_SHARED) && (in->xattrlock.is_xlocked_by_client(client))) ||
+          ((mask & CEPH_CAP_FILE_SHARED) && (in->filelock.is_xlocked_by_client(client)))) {
+	r = -1;
+      }
+    }
+
     if (r < 0) {
       // fall-thru. let rdlock_path_pin_ref() check again.
     } else if (is_lookup) {
@@ -4135,6 +4147,7 @@ void Server::handle_client_getattr(const MDRequestRef& mdr, bool is_lookup)
       auto em = dn->batch_ops.emplace(std::piecewise_construct, std::forward_as_tuple(mask), std::forward_as_tuple());
       if (em.second) {
 	em.first->second = std::make_unique<Batch_Getattr_Lookup>(this, mdr);
+        mdr->mark_event("creating lookup batch head");
       } else {
 	dout(20) << __func__ << ": LOOKUP op, wait for previous same getattr ops to respond. " << *mdr << dendl;
 	em.first->second->add_request(mdr);
@@ -4147,6 +4160,7 @@ void Server::handle_client_getattr(const MDRequestRef& mdr, bool is_lookup)
       auto em = in->batch_ops.emplace(std::piecewise_construct, std::forward_as_tuple(mask), std::forward_as_tuple());
       if (em.second) {
 	em.first->second = std::make_unique<Batch_Getattr_Lookup>(this, mdr);
+        mdr->mark_event("creating getattr batch head");
       } else {
 	dout(20) << __func__ << ": GETATTR op, wait for previous same getattr ops to respond. " << *mdr << dendl;
 	em.first->second->add_request(mdr);
@@ -4168,7 +4182,6 @@ void Server::handle_client_getattr(const MDRequestRef& mdr, bool is_lookup)
    * handling this case here is easier than weakening rdlock
    * semantics... that would cause problems elsewhere.
    */
-  client_t client = mdr->get_client();
   int issued = 0;
   Capability *cap = ref->get_client_cap(client);
   if (cap && (mdr->snapid == CEPH_NOSNAP ||
@@ -5478,7 +5491,7 @@ void Server::handle_client_setattr(const MDRequestRef& mdr)
     pi.inode->time_warp_seq++;   // maybe not a timewarp, but still a serialization point.
   if (mask & CEPH_SETATTR_SIZE) {
     if (truncating_smaller) {
-      pi.inode->truncate(old_size, req->head.args.setattr.size, req->get_data());
+      pi.inode->truncate(old_size, req->head.args.setattr.size, req->get_data().cbegin());
       le->metablob.add_truncate_start(cur->ino());
     } else {
       pi.inode->size = req->head.args.setattr.size;
@@ -5495,9 +5508,9 @@ void Server::handle_client_setattr(const MDRequestRef& mdr)
   }
 
   if (mask & CEPH_SETATTR_FSCRYPT_AUTH)
-    pi.inode->fscrypt_auth = req->fscrypt_auth;
+    pi.inode->fscrypt_auth.assign(req->fscrypt_auth.begin(), req->fscrypt_auth.end());
   if (mask & CEPH_SETATTR_FSCRYPT_FILE)
-    pi.inode->fscrypt_file = req->fscrypt_file;
+    pi.inode->fscrypt_file.assign(req->fscrypt_file.begin(), req->fscrypt_file.end());
 
   pi.inode->version = cur->pre_dirty();
   pi.inode->ctime = mdr->get_op_stamp();
@@ -8217,6 +8230,7 @@ void Server::_unlink_local(const MDRequestRef& mdr, CDentry *dn, CDentry *strayd
   {
     std::string t;
     dn->make_path_string(t, true);
+    dout(20) << " stray_prior_path = " << t << dendl;
     pi.inode->stray_prior_path = std::move(t);
   }
   pi.inode->version = in->pre_dirty();
@@ -9512,6 +9526,7 @@ void Server::_rename_prepare(const MDRequestRef& mdr,
       {
         std::string t;
         destdn->make_path_string(t, true);
+        dout(20) << " stray_prior_path = " << t << dendl;
         tpi->stray_prior_path = std::move(t);
       }
       tpi->nlink--;

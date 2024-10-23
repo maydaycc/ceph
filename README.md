@@ -4,6 +4,7 @@ See https://ceph.com/ for current information about Ceph.
 
 ## Status
 
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/2220/badge)](https://www.bestpractices.dev/projects/2220)
 [![Issue Backporting](https://github.com/ceph/ceph/actions/workflows/create-backport-trackers.yml/badge.svg)](https://github.com/ceph/ceph/actions/workflows/create-backport-trackers.yml)
 
 ## Contributing Code
@@ -48,19 +49,21 @@ out the git submodules associated with it:
 
 ## Build Prerequisites
 
-*section last updated 27 Jul 2023*
+*section last updated 06 Sep 2024*
 
-Make sure that ``curl`` is installed. The Debian and Ubuntu ``apt`` command is
-provided here, but if you use a system with a different package manager, then
-you must use whatever command is the proper counterpart of this one:
+We provide the Debian and Ubuntu ``apt`` commands in this procedure. If you use
+a system with a different package manager, then you will have to use different
+commands. 
+
+#. Install ``curl``:
 
     apt install curl
 
-Install Debian or RPM package dependencies by running the following command:
+#. Install package dependencies by running the ``install-deps.sh`` script:
 
 	./install-deps.sh
 
-Install the ``python3-routes`` package:
+#. Install the ``python3-routes`` package:
 
     apt install python3-routes
 
@@ -79,7 +82,7 @@ To build Ceph, follow this procedure:
    contains `do_cmake.sh` and `CONTRIBUTING.rst`.
 2. Run the `do_cmake.sh` script:
 
-    ``./do_cmake.sh``
+       ./do_cmake.sh
 
    ``do_cmake.sh`` by default creates a "debug build" of Ceph, which can be 
    up to five times slower than a non-debug build. Pass 
@@ -87,12 +90,13 @@ To build Ceph, follow this procedure:
    non-debug build.
 3. Move into the `build` directory:
 
-    ``cd build``
+       cd build
 4. Use the `ninja` buildsystem to build the development environment:
 
-    ``ninja``
+       ninja -j3
 
-   > [!TIP]
+   > [IMPORTANT]
+   >
    > [Ninja](https://ninja-build.org/) is the build system used by the Ceph
    > project to build test builds.  The number of jobs used by `ninja` is 
    > derived from the number of CPU cores of the building host if unspecified. 
@@ -104,24 +108,24 @@ To build Ceph, follow this procedure:
    > Using the `-j` option with an argument appropriate to the hardware on
    > which the `ninja` command is run is expected to result in a successful
    > build. For example, to limit the job number to 3, run the command `ninja
-   > -j 3`. On average, each `ninja` job run in parallel needs approximately
+   > -j3`. On average, each `ninja` job run in parallel needs approximately
    > 2.5 GiB of RAM.
 
-This documentation assumes that your build directory is a subdirectory of the
-`ceph.git` checkout. If the build directory is located elsewhere, point
-`CEPH_GIT_DIR` to the correct path of the checkout. Additional CMake args can
-be specified by setting ARGS before invoking ``do_cmake.sh``.  See [cmake
-options](#cmake-options) for more details. For example:
+   This documentation assumes that your build directory is a subdirectory of
+   the `ceph.git` checkout. If the build directory is located elsewhere, point
+   `CEPH_GIT_DIR` to the correct path of the checkout. Additional CMake args 
+   can be specified by setting ARGS before invoking ``do_cmake.sh``. 
+   See [cmake options](#cmake-options) for more details. For example:
 
-    ARGS="-DCMAKE_C_COMPILER=gcc-7" ./do_cmake.sh
+       ARGS="-DCMAKE_C_COMPILER=gcc-7" ./do_cmake.sh
 
-To build only certain targets, run a command of the following form:
+   To build only certain targets, run a command of the following form:
 
-	ninja [target name]
+       ninja [target name]
 
-To install:
+5. Install the vstart cluster:
 
-	ninja install
+       ninja install
  
 ### CMake Options
 

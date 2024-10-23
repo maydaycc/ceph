@@ -44,8 +44,8 @@ class JobThread(threading.Thread):
                             return
                         timo = self.async_job.wakeup_timeout
                         if timo is not None:
-                            vols = [e['name'] for e in list_volumes(self.vc.mgr)]
-                            missing = set(vols) - set(self.async_job.q)
+                            volnames = list_volumes(self.vc.mgr)
+                            missing = set(volnames) - set(self.async_job.q)
                             for m in missing:
                                 self.async_job.jobs[m] = []
                                 self.async_job.q.append(m)
@@ -167,7 +167,7 @@ class AsyncJobs(threading.Thread):
                     for i in range(c, self.nr_concurrent_jobs):
                         self.threads.append(JobThread(self, self.vc, name="{0}.{1}.{2}".format(self.name_pfx, time.time(), i)))
                         self.threads[-1].start()
-                self.cv.wait(timeout=5)
+                self.cv.wait(timeout=self.wakeup_timeout)
 
     def shutdown(self):
         self.stopping.set()

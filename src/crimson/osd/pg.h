@@ -64,6 +64,7 @@ namespace crimson::osd {
 class OpsExecuter;
 class BackfillRecovery;
 class SnapTrimEvent;
+class PglogBasedRecovery;
 
 class PG : public boost::intrusive_ref_counter<
   PG,
@@ -264,7 +265,7 @@ public:
     LOG_PREFIX(PG::request_local_background_io_reservation);
     SUBDEBUGDPP(
       osd, "priority {} on_grant {} on_preempt {}",
-      *this, on_grant->get_desc(), on_preempt->get_desc());
+      *this, priority, on_grant->get_desc(), on_preempt->get_desc());
     shard_services.local_request_reservation(
       orderer,
       pgid,
@@ -357,11 +358,24 @@ public:
     shard_services.remove_want_pg_temp(orderer, pgid.pgid);
   }
   void check_recovery_sources(const OSDMapRef& newmap) final {
-    // Not needed yet
+    LOG_PREFIX(PG::check_recovery_sources);
+    recovery_backend->for_each_recovery_waiter(
+      [newmap, FNAME, this](auto &, auto &waiter) {
+        if (waiter->is_pulling() &&
+            newmap->is_down(waiter->pull_info->from.osd)) {
+          SUBDEBUGDPP(
+            osd,
+            " repeating pulling for {}, due to osd {} down",
+            *this,
+            waiter->pull_info->soid,
+            waiter->pull_info->from.osd);
+          waiter->repeat_pull();
+        }
+      });
   }
   void check_blocklisted_watchers() final;
   void clear_primary_state() final {
-    // Not needed yet
+    recovery_finisher = nullptr;
   }
 
   void queue_check_readable(epoch_t last_peering_reset,
@@ -380,7 +394,7 @@ public:
   void on_replica_activate() final;
   void on_activate_complete() final;
   void on_new_interval() final {
-    // Not needed yet
+    recovery_finisher = nullptr;
   }
   Context *on_clean() final;
   void on_activate_committed() final {
@@ -417,7 +431,11 @@ public:
     recovery_handler->on_backfill_reserved();
   }
   void on_backfill_canceled() final {
-    ceph_assert(0 == "Not implemented");
+    recovery_handler->backfill_cancelled();
+  }
+
+  void on_recovery_cancelled() final {
+    cancel_pglog_based_recovery_op();
   }
 
   void on_recovery_reserved() final {
@@ -432,15 +450,17 @@ public:
   }
   void unreserve_recovery_space() final {}
 
+  void remove_maybe_snapmapped_object(
+    ceph::os::Transaction &t,
+    const hobject_t &soid);
+
   struct PGLogEntryHandler : public PGLog::LogEntryHandler {
     PG *pg;
     ceph::os::Transaction *t;
     PGLogEntryHandler(PG *pg, ceph::os::Transaction *t) : pg(pg), t(t) {}
 
     // LogEntryHandler
-    void remove(const hobject_t &hoid) override {
-      // TODO
-    }
+    void remove(const hobject_t &soid) override;
     void try_stash(const hobject_t &hoid, version_t v) override {
       // TODO
     }
@@ -576,6 +596,9 @@ public:
 
   interruptible_future<> handle_rep_op(Ref<MOSDRepOp> m);
   void update_stats(const pg_stat_t &stat);
+  interruptible_future<> update_snap_map(
+    const std::vector<pg_log_entry_t> &log_entries,
+    ObjectStore::Transaction& t);
   void log_operation(
     std::vector<pg_log_entry_t>&& logv,
     const eversion_t &trim_to,
@@ -596,9 +619,9 @@ public:
 
   void print(std::ostream& os) const;
   void dump_primary(Formatter*);
-  seastar::future<> complete_error_log(const ceph_tid_t& rep_tid,
+  interruptible_future<> complete_error_log(const ceph_tid_t& rep_tid,
                                        const eversion_t& version);
-  seastar::future<std::optional<eversion_t>> submit_error_log(
+  interruptible_future<eversion_t> submit_error_log(
     Ref<MOSDOp> m,
     const OpInfo &op_info,
     ObjectContextRef obc,
@@ -622,43 +645,38 @@ private:
     }
   } background_process_lock;
 
-  using do_osd_ops_ertr = crimson::errorator<
-   crimson::ct_error::eagain>;
-  using do_osd_ops_iertr =
-    ::crimson::interruptible::interruptible_errorator<
-      ::crimson::osd::IOInterruptCondition,
-      ::crimson::errorator<crimson::ct_error::eagain>>;
-  template <typename Ret = void>
-  using pg_rep_op_fut_t =
-    std::tuple<interruptible_future<>,
-               do_osd_ops_iertr::future<Ret>>;
-  do_osd_ops_iertr::future<pg_rep_op_fut_t<MURef<MOSDOpReply>>> do_osd_ops(
-    Ref<MOSDOp> m,
-    crimson::net::ConnectionXcoreRef conn,
+  using run_executer_ertr = crimson::compound_errorator_t<
+    OpsExecuter::osd_op_errorator,
+    crimson::errorator<
+      crimson::ct_error::edquot,
+      crimson::ct_error::eagain,
+      crimson::ct_error::enospc
+      >
+    >;
+  using run_executer_iertr = crimson::interruptible::interruptible_errorator<
+    ::crimson::osd::IOInterruptCondition,
+    run_executer_ertr>;
+  using run_executer_fut = run_executer_iertr::future<>;
+  run_executer_fut run_executer(
+    OpsExecuter &ox,
     ObjectContextRef obc,
     const OpInfo &op_info,
-    const SnapContext& snapc);
+    std::vector<OSDOp>& ops);
+
+  using submit_executer_ret = std::tuple<
+    interruptible_future<>,
+    interruptible_future<>>;
+  using submit_executer_fut = interruptible_future<
+    submit_executer_ret>;
+  submit_executer_fut submit_executer(
+    OpsExecuter &&ox,
+    const std::vector<OSDOp>& ops);
 
   struct do_osd_ops_params_t;
-  do_osd_ops_iertr::future<MURef<MOSDOpReply>> log_reply(
-    Ref<MOSDOp> m,
-    const std::error_code& e);
-  do_osd_ops_iertr::future<pg_rep_op_fut_t<>> do_osd_ops(
-    ObjectContextRef obc,
-    std::vector<OSDOp>& ops,
-    const OpInfo &op_info,
-    const do_osd_ops_params_t &&params);
-  template <class Ret, class SuccessFunc, class FailureFunc>
-  do_osd_ops_iertr::future<pg_rep_op_fut_t<Ret>> do_osd_ops_execute(
-    seastar::lw_shared_ptr<OpsExecuter> ox,
-    ObjectContextRef obc,
-    const OpInfo &op_info,
-    Ref<MOSDOp> m,
-    std::vector<OSDOp>& ops,
-    SuccessFunc&& success_func,
-    FailureFunc&& failure_func);
+
   interruptible_future<MURef<MOSDOpReply>> do_pg_ops(Ref<MOSDOp> m);
-  std::tuple<interruptible_future<>, interruptible_future<>>
+  interruptible_future<
+    std::tuple<interruptible_future<>, interruptible_future<>>>
   submit_transaction(
     ObjectContextRef&& obc,
     ceph::os::Transaction&& txn,
@@ -688,9 +706,17 @@ public:
   }
   seastar::future<> stop();
 private:
+  class C_PG_FinishRecovery : public Context {
+  public:
+    explicit C_PG_FinishRecovery(PG &pg) : pg(pg) {}
+    void finish(int r) override;
+  private:
+    PG& pg;
+  };
   std::unique_ptr<PGBackend> backend;
   std::unique_ptr<RecoveryBackend> recovery_backend;
   std::unique_ptr<PGRecovery> recovery_handler;
+  C_PG_FinishRecovery *recovery_finisher;
 
   PeeringState peering_state;
   eversion_t projected_last_update;
@@ -823,6 +849,10 @@ public:
     return can_discard_replica_op(m, m.get_map_epoch());
   }
 
+  void set_pglog_based_recovery_op(PglogBasedRecovery *op) final;
+  void reset_pglog_based_recovery_op() final;
+  void cancel_pglog_based_recovery_op();
+
 private:
   // instead of seastar::gate, we use a boolean flag to indicate
   // whether the system is shutting down, as we don't need to track
@@ -830,6 +860,7 @@ private:
   bool stopping = false;
 
   PGActivationBlocker wait_for_active_blocker;
+  PglogBasedRecovery* pglog_based_recovery_op = nullptr;
 
   friend std::ostream& operator<<(std::ostream&, const PG& pg);
   friend class ClientRequest;
@@ -848,6 +879,10 @@ private:
   friend class SnapTrimObjSubEvent;
 private:
 
+  void mutate_object(
+    ObjectContextRef& obc,
+    ceph::os::Transaction& txn,
+    osd_op_params_t& osd_op_p);
   bool can_discard_replica_op(const Message& m, epoch_t m_map_epoch) const;
   bool can_discard_op(const MOSDOp& m) const;
   void context_registry_on_change();

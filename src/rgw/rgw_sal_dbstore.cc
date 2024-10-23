@@ -26,6 +26,8 @@
 #include "rgw_sal_dbstore.h"
 #include "rgw_bucket.h"
 
+#include "driver/rados/rgw_rados.h" // XXX: for RGW_OBJ_NS_MULTIPART, PUT_OBJ_CREATE, etc
+
 #define dout_subsys ceph_subsys_rgw
 
 using namespace std;
@@ -715,7 +717,11 @@ namespace rgw::sal {
     return ret;
   }
 
-  int DBObject::delete_object(const DoutPrefixProvider* dpp, optional_yield y, uint32_t flags)
+  int DBObject::delete_object(const DoutPrefixProvider* dpp,
+      optional_yield y,
+      uint32_t flags,
+      std::list<rgw_obj_index_key>* remove_objs,
+      RGWObjVersionTracker* objv)
   {
     DB::Object del_target(store->getDB(), bucket->get_info(), get_obj());
     DB::Object::Delete del_op(&del_target);
@@ -907,7 +913,8 @@ namespace rgw::sal {
 				   RGWCompressionInfo& cs_info, off_t& ofs,
 				   std::string& tag, ACLOwner& owner,
 				   uint64_t olh_epoch,
-				   rgw::sal::Object* target_obj)
+				   rgw::sal::Object* target_obj,
+				   prefix_map_t& processed_prefixes)
   {
     char final_etag[CEPH_CRYPTO_MD5_DIGESTSIZE];
     char final_etag_str[CEPH_CRYPTO_MD5_DIGESTSIZE * 2 + 16];
@@ -1015,6 +1022,15 @@ namespace rgw::sal {
 
     /* No need to delete Meta obj here. It is deleted from sal */
     return ret;
+  }
+
+  int DBMultipartUpload::cleanup_orphaned_parts(const DoutPrefixProvider *dpp,
+      CephContext *cct, optional_yield y,
+      const rgw_obj& obj,
+      std::list<rgw_obj_index_key>& remove_objs,
+      prefix_map_t& processed_prefixes)
+  {
+    return -ENOTSUP;
   }
 
   int DBMultipartUpload::get_info(const DoutPrefixProvider *dpp, optional_yield y, rgw_placement_rule** rule, rgw::sal::Attrs* attrs)
@@ -1838,40 +1854,47 @@ namespace rgw::sal {
     return std::make_unique<DBLifecycle>(this);
   }
 
-  int DBLifecycle::get_entry(const std::string& oid, const std::string& marker,
-			      std::unique_ptr<LCEntry>* entry)
+  int DBLifecycle::get_entry(const DoutPrefixProvider* dpp, optional_yield y,
+                             const std::string& oid, const std::string& marker,
+                             LCEntry& entry)
   {
     return store->getDB()->get_entry(oid, marker, entry);
   }
 
-  int DBLifecycle::get_next_entry(const std::string& oid, const std::string& marker,
-				  std::unique_ptr<LCEntry>* entry)
+  int DBLifecycle::get_next_entry(const DoutPrefixProvider* dpp, optional_yield y,
+                                  const std::string& oid, const std::string& marker,
+				  LCEntry& entry)
   {
     return store->getDB()->get_next_entry(oid, marker, entry);
   }
 
-  int DBLifecycle::set_entry(const std::string& oid, LCEntry& entry)
+  int DBLifecycle::set_entry(const DoutPrefixProvider* dpp, optional_yield y,
+                             const std::string& oid, const LCEntry& entry)
   {
     return store->getDB()->set_entry(oid, entry);
   }
 
-  int DBLifecycle::list_entries(const std::string& oid, const std::string& marker,
-  				 uint32_t max_entries, vector<std::unique_ptr<LCEntry>>& entries)
+  int DBLifecycle::list_entries(const DoutPrefixProvider* dpp, optional_yield y,
+                                const std::string& oid, const std::string& marker,
+  				 uint32_t max_entries, vector<LCEntry>& entries)
   {
     return store->getDB()->list_entries(oid, marker, max_entries, entries);
   }
 
-  int DBLifecycle::rm_entry(const std::string& oid, LCEntry& entry)
+  int DBLifecycle::rm_entry(const DoutPrefixProvider* dpp, optional_yield y,
+                            const std::string& oid, const LCEntry& entry)
   {
     return store->getDB()->rm_entry(oid, entry);
   }
 
-  int DBLifecycle::get_head(const std::string& oid, std::unique_ptr<LCHead>* head)
+  int DBLifecycle::get_head(const DoutPrefixProvider* dpp, optional_yield y,
+                            const std::string& oid, LCHead& head)
   {
     return store->getDB()->get_head(oid, head);
   }
 
-  int DBLifecycle::put_head(const std::string& oid, LCHead& head)
+  int DBLifecycle::put_head(const DoutPrefixProvider* dpp, optional_yield y,
+                            const std::string& oid, const LCHead& head)
   {
     return store->getDB()->put_head(oid, head);
   }

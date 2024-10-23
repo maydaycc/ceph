@@ -28,7 +28,8 @@ SegmentedOolWriter::SegmentedOolWriter(
 {
 }
 
-void SegmentedOolWriter::write_record(
+SegmentedOolWriter::alloc_write_ertr::future<>
+SegmentedOolWriter::write_record(
   Transaction& t,
   record_t&& record,
   std::list<LogicalCachedExtentRef>&& extents,
@@ -62,20 +63,15 @@ void SegmentedOolWriter::write_record(
     extent_addr = extent_addr.as_seg_paddr().add_offset(
         extent->get_length());
   }
-  // t might be destructed inside write_future
-  auto write_future = seastar::with_gate(write_guard,
-    [this, FNAME, tid=t.get_trans_id(),
-     record_base=ret.record_base_regardless_md,
-     submit_fut=std::move(ret.future)]() mutable {
-    return std::move(submit_fut
-    ).safe_then([this, FNAME, tid, record_base](record_locator_t ret) {
-      TRACE("trans.{} {} finish {}=={}",
-            tid, segment_allocator.get_name(), ret, record_base);
-      // ool won't write metadata, so the paddrs must be equal
-      assert(ret.record_block_base == record_base.offset);
-    });
+  return std::move(ret.future
+  ).safe_then([this, FNAME, &t,
+               record_base=ret.record_base_regardless_md
+              ](record_locator_t ret) {
+    TRACET("{} finish {}=={}",
+           t, segment_allocator.get_name(), ret, record_base);
+    // ool won't write metadata, so the paddrs must be equal
+    assert(ret.record_block_base == record_base.offset);
   });
-  t.get_handle().add_write_future(std::move(write_future));
 }
 
 SegmentedOolWriter::alloc_write_iertr::future<>
@@ -112,15 +108,19 @@ SegmentedOolWriter::do_write(
       DEBUGT("{} extents={} submit {} extents and roll, unavailable ...",
              t, segment_allocator.get_name(),
              extents.size(), num_extents);
+      auto fut_write = alloc_write_ertr::now();
       if (num_extents > 0) {
         assert(record_submitter.check_action(record.size) !=
                action_t::ROLL);
-        write_record(
+        fut_write = write_record(
             t, std::move(record), std::move(pending_extents),
             true/* with_atomic_roll_segment */);
       }
       return trans_intr::make_interruptible(
-        record_submitter.roll_segment()
+        record_submitter.roll_segment(
+        ).safe_then([fut_write=std::move(fut_write)]() mutable {
+          return std::move(fut_write);
+        })
       ).si_then([this, &t, &extents] {
         return do_write(t, extents);
       });
@@ -151,12 +151,15 @@ SegmentedOolWriter::do_write(
       DEBUGT("{} extents={} submit {} extents ...",
              t, segment_allocator.get_name(),
              extents.size(), pending_extents.size());
-      write_record(t, std::move(record), std::move(pending_extents));
-      if (!extents.empty()) {
-        return do_write(t, extents);
-      } else {
-        return alloc_write_iertr::now();
-      }
+      return trans_intr::make_interruptible(
+        write_record(t, std::move(record), std::move(pending_extents))
+      ).si_then([this, &t, &extents] {
+        if (!extents.empty()) {
+          return do_write(t, extents);
+        } else {
+          return alloc_write_iertr::now();
+        }
+      });
     }
     // SUBMIT_NOT_FULL: evaluate the next extent
   }
@@ -166,8 +169,8 @@ SegmentedOolWriter::do_write(
          t, segment_allocator.get_name(),
          num_extents);
   assert(num_extents > 0);
-  write_record(t, std::move(record), std::move(pending_extents));
-  return alloc_write_iertr::now();
+  return trans_intr::make_interruptible(
+    write_record(t, std::move(record), std::move(pending_extents)));
 }
 
 SegmentedOolWriter::alloc_write_iertr::future<>
@@ -277,7 +280,8 @@ void ExtentPlacementManager::set_primary_device(Device *device)
 device_stats_t
 ExtentPlacementManager::get_device_stats(
   const writer_stats_t &journal_stats,
-  bool report_detail) const
+  bool report_detail,
+  double seconds) const
 {
   LOG_PREFIX(ExtentPlacementManager::get_device_stats);
 
@@ -345,16 +349,7 @@ ExtentPlacementManager::get_device_stats(
     cold_stats.add(cold_writer_stats.back());
   }
 
-  auto now = seastar::lowres_clock::now();
-  if (last_tp == seastar::lowres_clock::time_point::min()) {
-    last_tp = now;
-    return {};
-  }
-  std::chrono::duration<double> duration_d = now - last_tp;
-  double seconds = duration_d.count();
-  last_tp = now;
-
-  if (report_detail) {
+  if (report_detail && seconds != 0) {
     std::ostringstream oss;
     auto report_writer_stats = [seconds, &oss](
         const char* name,
@@ -991,11 +986,25 @@ RandomBlockOolWriter::alloc_write_ool_extents(
   if (extents.empty()) {
     return alloc_write_iertr::now();
   }
-  do_write(t, extents);
-  return alloc_write_iertr::now();
+  return seastar::with_gate(write_guard, [this, &t, &extents] {
+    seastar::lw_shared_ptr<rbm_pending_ool_t> ptr =
+      seastar::make_lw_shared<rbm_pending_ool_t>();
+    ptr->pending_extents = t.get_pre_alloc_list();
+    assert(!t.is_conflicted());
+    t.set_pending_ool(ptr);
+    return do_write(t, extents
+    ).finally([this, ptr=ptr] {
+      if (ptr->is_conflicted) {
+	for (auto &e : ptr->pending_extents) {
+	  rb_cleaner->mark_space_free(e->get_paddr(), e->get_length());
+	}
+      }
+    });
+  });
 }
 
-void RandomBlockOolWriter::do_write(
+RandomBlockOolWriter::alloc_write_iertr::future<>
+RandomBlockOolWriter::do_write(
   Transaction& t,
   std::list<CachedExtentRef>& extents)
 {
@@ -1004,7 +1013,6 @@ void RandomBlockOolWriter::do_write(
   DEBUGT("start with {} allocated extents",
          t, extents.size());
   std::vector<write_info_t> writes;
-  writes.reserve(extents.size());
   for (auto& ex : extents) {
     auto paddr = ex->get_paddr();
     assert(paddr.is_absolute());
@@ -1015,27 +1023,24 @@ void RandomBlockOolWriter::do_write(
     auto& stats = t.get_ool_write_stats();
     stats.extents.num += 1;
     stats.extents.bytes += ex->get_length();
-    stats.num_records += 1;
-
     ex->prepare_write();
-    extent_len_t offset = 0;
+
     bufferptr bp;
     if (can_inplace_rewrite(t, ex)) {
       assert(ex->is_logical());
       auto r = ex->template cast<LogicalCachedExtent>()->get_modified_region();
       ceph_assert(r.has_value());
-      offset = p2align(r->offset, rbm->get_block_size());
+      extent_len_t offset = p2align(r->offset, rbm->get_block_size());
       extent_len_t len =
 	p2roundup(r->offset + r->len, rbm->get_block_size()) - offset;
       bp = ceph::bufferptr(ex->get_bptr(), offset, len);
+      paddr = ex->get_paddr() + offset;
     } else {
       bp = ex->get_bptr();
       auto& trans_stats = get_by_src(w_stats.stats_by_src, t.get_src());
-      ++(trans_stats.num_records);
       trans_stats.data_bytes += ex->get_length();
       w_stats.data_bytes += ex->get_length();
     }
-    writes.push_back(write_info_t{paddr + offset, std::move(bp), rbm});
 
     if (ex->is_initial_pending()) {
       t.mark_allocated_extent_ool(ex);
@@ -1046,13 +1051,52 @@ void RandomBlockOolWriter::do_write(
     } else {
       ceph_assert("impossible");
     }
+
+    // TODO : allocate a consecutive address based on a transaction
+    if (writes.size() != 0 &&
+        writes.back().offset + writes.back().bp.length() == paddr) {
+      // We can write both the currrent extent and the previous one at once
+      // if the extents are located in a row
+      if (writes.back().mergeable_bps.size() == 0) {
+	 writes.back().mergeable_bps.push_back(writes.back().bp);
+      }
+      writes.back().mergeable_bps.push_back(ex->get_bptr());
+    } else {
+      // Write a single extent in the existing way
+      write_info_t w_info;
+      w_info.offset = paddr;
+      w_info.rbm = rbm;
+      w_info.bp = bp;
+      writes.push_back(w_info);
+    }
+    TRACE("current extent: base off {} len {},\
+      maybe-merged current extent: base off {} len {}",
+      paddr, ex->get_length(), writes.back().offset, writes.back().bp.length());
   }
 
-  // t might be destructed inside write_future
-  auto write_future = seastar::with_gate(write_guard,
-    [writes=std::move(writes)]() mutable {
-    return seastar::do_with(std::move(writes),
-      [](auto& writes) {
+  for (auto &w : writes) {
+    if (w.mergeable_bps.size() > 0) {
+      extent_len_t len = 0;
+      for (auto &b : w.mergeable_bps) {
+	len += b.length();
+      }
+      w.bp = ceph::bufferptr(ceph::buffer::create_page_aligned(len));
+      extent_len_t cursor = 0;
+      for (auto &b : w.mergeable_bps) {
+	w.bp.copy_in(cursor, b.length(), b.c_str());
+	cursor += b.length();
+      }
+      w.mergeable_bps.clear();
+    }
+  }
+
+  return trans_intr::make_interruptible(
+    seastar::do_with(std::move(writes),
+      [&t, this](auto& writes) {
+      auto& stats = t.get_ool_write_stats();
+      stats.num_records += writes.size();
+      auto& trans_stats = get_by_src(w_stats.stats_by_src, t.get_src());
+      trans_stats.num_records += writes.size();
       return crimson::do_for_each(writes,
         [](auto& info) {
         return info.rbm->write(info.offset, info.bp
@@ -1062,9 +1106,8 @@ void RandomBlockOolWriter::do_write(
             "Invalid error when writing record"}
         );
       });
-    });
-  });
-  t.get_handle().add_write_future(std::move(write_future));
+    })
+  );
 }
 
 }

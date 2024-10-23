@@ -49,7 +49,8 @@ from rbd import (RBD, Group, Image, ImageNotFound, InvalidArgument, ImageExists,
                  RBD_SNAP_CREATE_IGNORE_QUIESCE_ERROR,
                  RBD_WRITE_ZEROES_FLAG_THICK_PROVISION,
                  RBD_ENCRYPTION_FORMAT_LUKS1, RBD_ENCRYPTION_FORMAT_LUKS2,
-                 RBD_ENCRYPTION_FORMAT_LUKS, RBD_GROUP_SNAP_STATE_COMPLETE)
+                 RBD_ENCRYPTION_FORMAT_LUKS, RBD_GROUP_SNAP_STATE_COMPLETE,
+                 RBD_GROUP_SNAP_NAMESPACE_TYPE_USER)
 
 rados = None
 ioctx = None
@@ -2391,6 +2392,27 @@ class TestMirroring(object):
         self.rbd.mirror_site_name_set(rados, "")
         eq(rados.get_fsid(), self.rbd.mirror_site_name_get(rados))
 
+    def test_mirror_remote_namespace(self):
+        remote_namespace = "remote-ns"
+        # cannot set remote namespace for the default namespace
+        assert_raises(InvalidArgument, self.rbd.mirror_remote_namespace_set,
+                      ioctx, remote_namespace)
+        eq("", self.rbd.mirror_remote_namespace_get(ioctx))
+        self.rbd.namespace_create(ioctx, "ns1")
+        ioctx.set_namespace("ns1")
+        self.rbd.mirror_mode_set(ioctx, RBD_MIRROR_MODE_IMAGE)
+        # cannot set remote namespace while mirroring enabled
+        assert_raises(InvalidArgument, self.rbd.mirror_remote_namespace_set,
+                      ioctx, remote_namespace)
+        self.rbd.mirror_mode_set(ioctx, RBD_MIRROR_MODE_DISABLED)
+        # cannot set remote namespace to the default namespace
+        assert_raises(InvalidArgument, self.rbd.mirror_remote_namespace_set,
+                      ioctx, "")
+        self.rbd.mirror_remote_namespace_set(ioctx, remote_namespace)
+        eq(remote_namespace, self.rbd.mirror_remote_namespace_get(ioctx))
+        ioctx.set_namespace("")
+        self.rbd.namespace_remove(ioctx, "ns1")
+
     def test_mirror_peer_bootstrap(self):
         eq([], list(self.rbd.mirror_peer_list(ioctx)))
 
@@ -2815,7 +2837,8 @@ def test_list_groups_after_removed():
 
 class TestGroups(object):
     img_snap_keys = ['image_name', 'pool_id', 'snap_id']
-    gp_snap_keys = ['id', 'image_snap_name', 'image_snaps', 'name', 'state']
+    gp_snap_keys = ['id', 'image_snap_name', 'image_snaps', 'name',
+                    'namespace_type', 'state']
 
     def setup_method(self, method):
         global snap_name
@@ -2904,6 +2927,7 @@ class TestGroups(object):
         assert sorted(snap_info_dict.keys()) == self.gp_snap_keys
         assert snap_info_dict['name'] == snap_name
         assert snap_info_dict['state'] == RBD_GROUP_SNAP_STATE_COMPLETE
+        assert snap_info_dict['namespace_type'] == RBD_GROUP_SNAP_NAMESPACE_TYPE_USER
         for image_snap in snap_info_dict['image_snaps']:
             assert sorted(image_snap.keys()) == self.img_snap_keys
             assert image_snap['pool_id'] == pool_id
@@ -2917,6 +2941,19 @@ class TestGroups(object):
 
         self.group.remove_snap(snap_name)
         assert_raises(ObjectNotFound, self.group.get_snap_info, snap_name)
+
+    def test_group_snap_get_info_no_member_images(self):
+        self.group.create_snap(snap_name)
+
+        snap_info_dict = self.group.get_snap_info(snap_name)
+        assert sorted(snap_info_dict.keys()) == self.gp_snap_keys
+        assert snap_info_dict['name'] == snap_name
+        assert snap_info_dict['state'] == RBD_GROUP_SNAP_STATE_COMPLETE
+        assert snap_info_dict['namespace_type'] == RBD_GROUP_SNAP_NAMESPACE_TYPE_USER
+        assert snap_info_dict['image_snap_name'] == ""
+        assert snap_info_dict['image_snaps'] == []
+
+        self.group.remove_snap(snap_name)
 
     def test_group_snap(self):
         global snap_name

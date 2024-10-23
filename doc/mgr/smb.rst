@@ -55,7 +55,7 @@ Create Cluster
 
 .. code:: bash
 
-    $ ceph smb cluster create <cluster_id> {user|active-directory} [--domain-realm=<domain_realm>] [--domain-join-user-pass=<domain_join_user_pass>] [--define-user-pass=<define_user_pass>] [--custom-dns=<custom_dns>] [--placement=<placement>]
+    $ ceph smb cluster create <cluster_id> {user|active-directory} [--domain-realm=<domain_realm>] [--domain-join-user-pass=<domain_join_user_pass>] [--define-user-pass=<define_user_pass>] [--custom-dns=<custom_dns>] [--placement=<placement>] [--clustering=<clustering>]
 
 Create a new logical cluster, identified by the cluster id value. The cluster
 create command must specify the authentication mode the cluster will use. This
@@ -88,6 +88,19 @@ custom_dns
     not configured to resolve DNS entries within AD domain(s).
 placement
     A Ceph orchestration :ref:`placement specifier <orchestrator-cli-placement-spec>`
+clustering
+    Optional. Control if a cluster abstraction actually uses Samba's clustering
+    mechanism.  The value may be one of ``default``, ``always``, or ``never``.
+    A ``default`` value indicates that clustering should be enabled if the
+    placement count value is any value other than 1. A value of ``always``
+    enables clustering regardless of the placement count. A value of ``never``
+    disables clustering regardless of the placement count. If unspecified,
+    ``default`` is assumed.
+public_addrs
+    Optional. A string in the form of <ipaddress/prefixlength>[%<destination interface>].
+    Supported only when using Samba's clustering. Assign "virtual" IP
+    addresses that will be managed by the clustering subsystem and may automatically
+    move between nodes running Samba containers.
 
 Remove Cluster
 ++++++++++++++
@@ -360,6 +373,35 @@ custom_dns
 placement
     Optional. A Ceph Orchestration :ref:`placement specifier
     <orchestrator-cli-placement-spec>`.  Defaults to one host if not provided
+clustering
+    Optional. Control if a cluster abstraction actually uses Samba's clustering
+    mechanism.  The value may be one of ``default``, ``always``, or ``never``.
+    A ``default`` value indicates that clustering should be enabled if the
+    placement count value is any value other than 1. A value of ``always``
+    enables clustering regardless of the placement count. A value of ``never``
+    disables clustering regardless of the placement count. If unspecified,
+    ``default`` is assumed.
+public_addrs
+    List of objects; optional. Supported only when using Samba's clustering.
+    Assign "virtual" IP addresses that will be managed by the clustering
+    subsystem and may automatically move between nodes running Samba
+    containers.
+    Fields:
+
+    address
+        Required string. An IP address with a required prefix length (example:
+        ``192.168.4.51/24``). This address will be assigned to one of the
+        host's network devices and managed automatically.
+    destination
+        Optional. String or list of strings. A ``destination`` defines where
+        the system will assign the managed IPs. Each string value must be a
+        network address (example ``192.168.4.0/24``). One or more destinations
+        may be supplied. The typical case is to use exactly one destination and
+        so the value may be supplied as a string, rather than a list with a
+        single item. Each destination network will be mapped to a device on a
+        host. Run ``cephadm list-networks`` for an example of these mappings.
+        If destination is not supplied the network is automatically determined
+        using the address value supplied and taken as the destination.
 custom_smb_global_options
     Optional mapping. Specify key-value pairs that will be directly added to
     the global ``smb.conf`` options (or equivalent) of a Samba server.  Do

@@ -994,9 +994,11 @@ int FilterBucket::abort_multiparts(const DoutPrefixProvider* dpp, CephContext* c
 
 int FilterObject::delete_object(const DoutPrefixProvider* dpp,
 				optional_yield y,
-				uint32_t flags)
+				uint32_t flags,
+				std::list<rgw_obj_index_key>* remove_objs,
+				RGWObjVersionTracker* objv)
 {
-  return next->delete_object(dpp, y, flags);
+  return next->delete_object(dpp, y, flags, remove_objs, objv);
 }
 
 int FilterObject::copy_object(const ACLOwner& owner,
@@ -1113,6 +1115,23 @@ int FilterObject::transition_to_cloud(Bucket* bucket,
 {
   return next->transition_to_cloud(nextBucket(bucket), nextPlacementTier(tier),
 				   o, cloud_targets, cct, update_object, dpp, y);
+}
+
+int FilterObject::restore_obj_from_cloud(Bucket* bucket,
+		          rgw::sal::PlacementTier* tier,
+		          rgw_placement_rule& placement_rule,
+		          rgw_bucket_dir_entry& o,
+		          CephContext* cct,
+		          RGWObjTier& tier_config,
+		          real_time& mtime,
+		          uint64_t olh_epoch,
+		          std::optional<uint64_t> days,
+		          const DoutPrefixProvider* dpp, 
+		          optional_yield y,
+		          uint32_t flags)
+{
+  return next->restore_obj_from_cloud(nextBucket(bucket), nextPlacementTier(tier),
+           placement_rule, o, cct, tier_config, mtime, olh_epoch, days, dpp, y, flags);
 }
 
 bool FilterObject::placement_rules_match(rgw_placement_rule& r1, rgw_placement_rule& r2)
@@ -1282,11 +1301,21 @@ int FilterMultipartUpload::complete(const DoutPrefixProvider *dpp,
 				    RGWCompressionInfo& cs_info, off_t& ofs,
 				    std::string& tag, ACLOwner& owner,
 				    uint64_t olh_epoch,
-				    rgw::sal::Object* target_obj)
+				    rgw::sal::Object* target_obj,
+				    prefix_map_t& processed_prefixes)
 {
   return next->complete(dpp, y, cct, part_etags, remove_objs, accounted_size,
 			compressed, cs_info, ofs, tag, owner, olh_epoch,
-			nextObject(target_obj));
+			nextObject(target_obj), processed_prefixes);
+}
+
+int FilterMultipartUpload::cleanup_orphaned_parts(const DoutPrefixProvider *dpp,
+                                                  CephContext *cct, optional_yield y,
+                                                  const rgw_obj& obj,
+                                                  std::list<rgw_obj_index_key>& remove_objs,
+                                                  prefix_map_t& processed_prefixes)
+{
+  return next->cleanup_orphaned_parts(dpp, cct, y, obj, remove_objs, processed_prefixes);
 }
 
 int FilterMultipartUpload::get_info(const DoutPrefixProvider *dpp,
@@ -1324,90 +1353,50 @@ int FilterLCSerializer::try_lock(const DoutPrefixProvider *dpp, utime_t dur,
   return next->try_lock(dpp, dur, y);
 }
 
-std::unique_ptr<Lifecycle::LCEntry> FilterLifecycle::get_entry()
+int FilterLifecycle::get_entry(const DoutPrefixProvider* dpp, optional_yield y,
+                               const std::string& oid, const std::string& marker,
+			       LCEntry& entry)
 {
-  std::unique_ptr<Lifecycle::LCEntry> e = next->get_entry();
-  return std::make_unique<FilterLCEntry>(std::move(e));
+  return next->get_entry(dpp, y, oid, marker, entry);
 }
 
-int FilterLifecycle::get_entry(const std::string& oid, const std::string& marker,
-			       std::unique_ptr<LCEntry>* entry)
+int FilterLifecycle::get_next_entry(const DoutPrefixProvider* dpp, optional_yield y,
+                                    const std::string& oid, const std::string& marker,
+				    LCEntry& entry)
 {
-  std::unique_ptr<LCEntry> ne;
-  int ret;
-
-  ret = next->get_entry(oid, marker, &ne);
-  if (ret < 0)
-    return ret;
-
-  LCEntry* e = new FilterLCEntry(std::move(ne));
-  entry->reset(e);
-
-  return 0;
+  return next->get_next_entry(dpp, y, oid, marker, entry);
 }
 
-int FilterLifecycle::get_next_entry(const std::string& oid, const std::string& marker,
-				    std::unique_ptr<LCEntry>* entry)
+int FilterLifecycle::set_entry(const DoutPrefixProvider* dpp, optional_yield y,
+                               const std::string& oid, const LCEntry& entry)
 {
-  std::unique_ptr<LCEntry> ne;
-  int ret;
-
-  ret = next->get_next_entry(oid, marker, &ne);
-  if (ret < 0)
-    return ret;
-
-  LCEntry* e = new FilterLCEntry(std::move(ne));
-  entry->reset(e);
-
-  return 0;
+  return next->set_entry(dpp, y, oid, entry);
 }
 
-int FilterLifecycle::set_entry(const std::string& oid, LCEntry& entry)
-{
-  return next->set_entry(oid, entry);
-}
-
-int FilterLifecycle::list_entries(const std::string& oid, const std::string& marker,
+int FilterLifecycle::list_entries(const DoutPrefixProvider* dpp, optional_yield y,
+                                  const std::string& oid, const std::string& marker,
 				  uint32_t max_entries,
-				  std::vector<std::unique_ptr<LCEntry>>& entries)
+				  std::vector<LCEntry>& entries)
 {
-  std::vector<std::unique_ptr<LCEntry>> ne;
-  int ret;
-
-  ret = next->list_entries(oid, marker, max_entries, ne);
-  if (ret < 0)
-    return ret;
-
-  for (auto& ent : ne) {
-    entries.emplace_back(std::make_unique<FilterLCEntry>(std::move(ent)));
-  }
-
-  return 0;
+  return next->list_entries(dpp, y, oid, marker, max_entries, entries);
 }
 
-int FilterLifecycle::rm_entry(const std::string& oid, LCEntry& entry)
+int FilterLifecycle::rm_entry(const DoutPrefixProvider* dpp, optional_yield y,
+                              const std::string& oid, const LCEntry& entry)
 {
-  return next->rm_entry(oid, entry);
+  return next->rm_entry(dpp, y, oid, entry);
 }
 
-int FilterLifecycle::get_head(const std::string& oid, std::unique_ptr<LCHead>* head)
+int FilterLifecycle::get_head(const DoutPrefixProvider* dpp, optional_yield y,
+                              const std::string& oid, LCHead& head)
 {
-  std::unique_ptr<LCHead> nh;
-  int ret;
-
-  ret = next->get_head(oid, &nh);
-  if (ret < 0)
-    return ret;
-
-  LCHead* h = new FilterLCHead(std::move(nh));
-  head->reset(h);
-
-  return 0;
+  return next->get_head(dpp, y, oid, head);
 }
 
-int FilterLifecycle::put_head(const std::string& oid, LCHead& head)
+int FilterLifecycle::put_head(const DoutPrefixProvider* dpp, optional_yield y,
+                              const std::string& oid, const LCHead& head)
 {
-  return next->put_head(oid, *(dynamic_cast<FilterLCHead&>(head).next.get()));
+  return next->put_head(dpp, y, oid, head);
 }
 
 std::unique_ptr<LCSerializer> FilterLifecycle::get_serializer(

@@ -160,6 +160,7 @@ namespace librbd {
   } group_info_t;
 
   typedef rbd_group_snap_state_t group_snap_state_t;
+  typedef rbd_group_snap_namespace_type_t group_snap_namespace_type_t;
 
   typedef struct {
     std::string image_name;
@@ -177,7 +178,7 @@ namespace librbd {
     std::string name;
     std::string image_snap_name;
     group_snap_state_t state;
-    //group_snap_namespace_type_t namespace_type;
+    group_snap_namespace_type_t namespace_type;
     std::vector<group_image_snap_info_t> image_snaps;
   } group_snap_info2_t;
 
@@ -357,6 +358,16 @@ public:
   int mirror_mode_get(IoCtx& io_ctx, rbd_mirror_mode_t *mirror_mode);
   int mirror_mode_set(IoCtx& io_ctx, rbd_mirror_mode_t mirror_mode);
 
+  int mirror_remote_namespace_get(IoCtx& io_ctx,
+                                  std::string* remote_namespace);
+
+  /**
+   * The value can be set only if mirroring on io_ctx is disabled. The
+   * previously set value will be automatically reset to io_ctx's namespace when
+   * mirroring on io_ctx is disabled.
+   */
+  int mirror_remote_namespace_set(IoCtx& io_ctx,
+                                  const std::string& remote_namespace);
   int mirror_uuid_get(IoCtx& io_ctx, std::string* mirror_uuid);
 
   int mirror_peer_bootstrap_create(IoCtx& io_ctx, std::string* token);

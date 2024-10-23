@@ -38,22 +38,30 @@ public:
   }
 };
 
-class DBLifecycle : public StoreLifecycle {
+class DBLifecycle : public Lifecycle {
   DBStore* store;
 
 public:
   DBLifecycle(DBStore* _st) : store(_st) {}
 
-  using StoreLifecycle::get_entry;
-  virtual int get_entry(const std::string& oid, const std::string& marker, std::unique_ptr<LCEntry>* entry) override;
-  virtual int get_next_entry(const std::string& oid, const std::string& marker, std::unique_ptr<LCEntry>* entry) override;
-  virtual int set_entry(const std::string& oid, LCEntry& entry) override;
-  virtual int list_entries(const std::string& oid, const std::string& marker,
+  virtual int get_entry(const DoutPrefixProvider* dpp, optional_yield y,
+                        const std::string& oid, const std::string& marker,
+                        LCEntry& entry) override;
+  virtual int get_next_entry(const DoutPrefixProvider* dpp, optional_yield y,
+                             const std::string& oid, const std::string& marker,
+                             LCEntry& entry) override;
+  virtual int set_entry(const DoutPrefixProvider* dpp, optional_yield y,
+                        const std::string& oid, const LCEntry& entry) override;
+  virtual int list_entries(const DoutPrefixProvider* dpp, optional_yield y,
+                           const std::string& oid, const std::string& marker,
 			   uint32_t max_entries,
-			   std::vector<std::unique_ptr<LCEntry>>& entries) override;
-  virtual int rm_entry(const std::string& oid, LCEntry& entry) override;
-  virtual int get_head(const std::string& oid, std::unique_ptr<LCHead>* head) override;
-  virtual int put_head(const std::string& oid, LCHead& head) override;
+			   std::vector<LCEntry>& entries) override;
+  virtual int rm_entry(const DoutPrefixProvider* dpp, optional_yield y,
+                       const std::string& oid, const LCEntry& entry) override;
+  virtual int get_head(const DoutPrefixProvider* dpp, optional_yield y,
+                       const std::string& oid, LCHead& head) override;
+  virtual int put_head(const DoutPrefixProvider* dpp, optional_yield y,
+                       const std::string& oid, const LCHead& head) override;
   virtual std::unique_ptr<LCSerializer> get_serializer(const std::string& lock_name,
 						       const std::string& oid,
 						       const std::string& cookie) override;
@@ -451,7 +459,13 @@ protected:
 		       RGWCompressionInfo& cs_info, off_t& ofs,
 		       std::string& tag, ACLOwner& owner,
 		       uint64_t olh_epoch,
-		       rgw::sal::Object* target_obj) override;
+		       rgw::sal::Object* target_obj,
+		       prefix_map_t& processed_prefixes) override;
+  virtual int cleanup_orphaned_parts(const DoutPrefixProvider *dpp,
+                                     CephContext *cct, optional_yield y,
+                                     const rgw_obj& obj,
+                                     std::list<rgw_obj_index_key>& remove_objs,
+                                     prefix_map_t& processed_prefixes) override;
     virtual int get_info(const DoutPrefixProvider *dpp, optional_yield y, rgw_placement_rule** rule, rgw::sal::Attrs* attrs = nullptr) override;
     virtual std::unique_ptr<Writer> get_writer(const DoutPrefixProvider *dpp,
 			  optional_yield y,
@@ -523,7 +537,9 @@ protected:
 
       virtual int delete_object(const DoutPrefixProvider* dpp,
           optional_yield y,
-          uint32_t flags) override;
+          uint32_t flags,
+          std::list<rgw_obj_index_key>* remove_objs,
+          RGWObjVersionTracker* objv) override;
       virtual int copy_object(const ACLOwner& owner,
           const rgw_user& remote_user,
           req_info* info, const rgw_zone_id& source_zone,

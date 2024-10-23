@@ -48,6 +48,7 @@ struct rgw_pubsub_bucket_topics;
 class RGWZonePlacementInfo;
 struct rgw_pubsub_topic;
 struct RGWOIDCProviderInfo;
+struct RGWRoleInfo;
 
 using RGWBucketListNameFilter = std::function<bool (const std::string&)>;
 
@@ -151,6 +152,21 @@ enum AttrsMod {
 
 static constexpr uint32_t FLAG_LOG_OP = 0x0001;
 static constexpr uint32_t FLAG_PREVENT_VERSIONING = 0x0002;
+
+enum RGWRestoreStatus : uint8_t {
+  None  = 0,
+  RestoreAlreadyInProgress = 1,
+  CloudRestored = 2,
+  RestoreFailed = 3
+};
+
+
+enum class RGWRestoreType : uint8_t {
+  None = 0,
+  Temporary = 1,
+  Permanent = 2
+};
+
 
 // a simple streaming data processing abstraction
 /**
@@ -1096,6 +1112,7 @@ class Object {
         rgw_zone_set* zones_trace{nullptr};
 	bool abortmp{false};
 	uint64_t parts_accounted_size{0};
+        RGWObjVersionTracker* objv_tracker = nullptr;
       } params;
 
       struct Result {
@@ -1115,7 +1132,9 @@ class Object {
     /** Shortcut synchronous delete call for common deletes */
     virtual int delete_object(const DoutPrefixProvider* dpp,
 			      optional_yield y,
-			      uint32_t flags) = 0;
+			      uint32_t flags,
+			      std::list<rgw_obj_index_key>* remove_objs,
+			      RGWObjVersionTracker* objv) = 0;
     /** Copy an this object to another object. */
     virtual int copy_object(const ACLOwner& owner, const rgw_user& remote_user,
                req_info* info, const rgw_zone_id& source_zone,
@@ -1195,6 +1214,18 @@ class Object {
 			   bool update_object,
 			   const DoutPrefixProvider* dpp,
 			   optional_yield y) = 0;
+    virtual int restore_obj_from_cloud(Bucket* bucket,
+			   rgw::sal::PlacementTier* tier,
+			   rgw_placement_rule& placement_rule,
+			   rgw_bucket_dir_entry& o,
+			   CephContext* cct,
+         		   RGWObjTier& tier_config,
+			   real_time& mtime,
+			   uint64_t olh_epoch,
+		           std::optional<uint64_t> days,
+			   const DoutPrefixProvider* dpp,
+			   optional_yield y,
+			   uint32_t flags) = 0;
     /** Check to see if two placement rules match */
     virtual bool placement_rules_match(rgw_placement_rule& r1, rgw_placement_rule& r2) = 0;
     /** Dump driver-specific object layout info in JSON */
@@ -1277,6 +1308,9 @@ class Object {
     /// Return stored torrent info or -ENOENT if there isn't any.
     virtual int get_torrent_info(const DoutPrefixProvider* dpp,
                                  optional_yield y, bufferlist& bl) = 0;
+
+    /** Get the version tracker for this object */
+    virtual RGWObjVersionTracker& get_version_tracker() = 0;
 
     /** Get the OMAP values matching the given set of keys */
     virtual int omap_get_vals_by_keys(const DoutPrefixProvider *dpp, const std::string& oid,
@@ -1361,6 +1395,8 @@ public:
  */
 class MultipartUpload {
 public:
+  using prefix_map_t = boost::container::flat_map<uint32_t, boost::container::flat_set<std::string>>;
+
   //object lock
   std::optional<RGWObjectRetention> obj_retention = std::nullopt;
   std::optional<RGWObjectLegalHold> obj_legal_hold = std::nullopt;
@@ -1407,7 +1443,14 @@ public:
 		       RGWCompressionInfo& cs_info, off_t& ofs,
 		       std::string& tag, ACLOwner& owner,
 		       uint64_t olh_epoch,
-		       rgw::sal::Object* target_obj) = 0;
+		       rgw::sal::Object* target_obj,
+                       prefix_map_t& processed_prefixes) = 0;
+  /** Cleanup orphaned parts caused by racing condition involving part upload retry */
+  virtual int cleanup_orphaned_parts(const DoutPrefixProvider *dpp,
+                                     CephContext *cct, optional_yield y,
+                                     const rgw_obj& obj,
+                                     std::list<rgw_obj_index_key>& remove_objs,
+                                     prefix_map_t& processed_prefixes) = 0;
 
   /** Get placement and/or attribute info for this upload */
   virtual int get_info(const DoutPrefixProvider *dpp, optional_yield y, rgw_placement_rule** rule, rgw::sal::Attrs* attrs = nullptr) = 0;
@@ -1491,6 +1534,21 @@ public:
   virtual ~LCSerializer() = default;
 };
 
+/** Head of a lifecycle run.  Used for tracking parallel lifecycle runs. */
+struct LCHead {
+  time_t start_date = 0;
+  std::string marker;
+  time_t shard_rollover_date = 0;
+};
+
+/** Single entry in a lifecycle run.  Multiple entries can exist processing different
+ * buckets. */
+struct LCEntry {
+  std::string bucket;
+  uint64_t start_time = 0;
+  uint32_t status = 0;
+};
+
 /**
  * @brief Abstraction for lifecycle processing
  *
@@ -1500,75 +1558,34 @@ public:
  */
 class Lifecycle {
 public:
-  /** Head of a lifecycle run.  Used for tracking parallel lifecycle runs. */
-  struct LCHead {
-    LCHead() = default;
-    virtual ~LCHead() = default;
-
-    virtual time_t& get_start_date() = 0;
-    virtual void set_start_date(time_t) = 0;
-    virtual std::string& get_marker() = 0;
-    virtual void set_marker(const std::string&) = 0;
-    virtual time_t& get_shard_rollover_date() = 0;
-    virtual void set_shard_rollover_date(time_t) = 0;
-  };
-
-  /** Single entry in a lifecycle run.  Multiple entries can exist processing different
-   * buckets. */
-  struct LCEntry {
-    LCEntry() = default;
-    virtual ~LCEntry() = default;
-
-    virtual std::string& get_bucket() = 0;
-    virtual void set_bucket(const std::string&) = 0;
-    virtual std::string& get_oid() = 0;
-    virtual void set_oid(const std::string&) = 0;
-    virtual uint64_t get_start_time() = 0;
-    virtual void set_start_time(uint64_t) = 0;
-    virtual uint32_t get_status() = 0;
-    virtual void set_status(uint32_t) = 0;
-
-    /** Print the entry to @a out */
-    virtual void print(std::ostream& out) const = 0;
-
-    friend inline std::ostream& operator<<(std::ostream& out, const LCEntry& e) {
-      e.print(out);
-      return out;
-    }
-    friend inline std::ostream& operator<<(std::ostream& out, const LCEntry* e) {
-      if (!e)
-	out << "<NULL>";
-      else
-	e->print(out);
-      return out;
-    }
-    friend inline std::ostream& operator<<(std::ostream& out, const std::unique_ptr<LCEntry>& p) {
-      out << p.get();
-      return out;
-      }
-  };
-
   Lifecycle() = default;
   virtual ~Lifecycle() = default;
 
-  /** Get an empty entry */
-  virtual std::unique_ptr<LCEntry> get_entry() = 0;
   /** Get an entry matching the given marker */
-  virtual int get_entry(const std::string& oid, const std::string& marker, std::unique_ptr<LCEntry>* entry) = 0;
+  virtual int get_entry(const DoutPrefixProvider* dpp, optional_yield y,
+                        const std::string& oid, const std::string& marker,
+                        LCEntry& entry) = 0;
   /** Get the entry following the given marker */
-  virtual int get_next_entry(const std::string& oid, const std::string& marker, std::unique_ptr<LCEntry>* entry) = 0;
+  virtual int get_next_entry(const DoutPrefixProvider* dpp, optional_yield y,
+                             const std::string& oid, const std::string& marker,
+                             LCEntry& entry) = 0;
   /** Store a modified entry in then backing store */
-  virtual int set_entry(const std::string& oid, LCEntry& entry) = 0;
+  virtual int set_entry(const DoutPrefixProvider* dpp, optional_yield y,
+                        const std::string& oid, const LCEntry& entry) = 0;
   /** List all known entries */
-  virtual int list_entries(const std::string& oid, const std::string& marker,
+  virtual int list_entries(const DoutPrefixProvider* dpp, optional_yield y,
+                           const std::string& oid, const std::string& marker,
 			   uint32_t max_entries,
-			   std::vector<std::unique_ptr<LCEntry>>& entries) = 0;
+			   std::vector<LCEntry>& entries) = 0;
   /** Remove an entry from the backing store */
-  virtual int rm_entry(const std::string& oid, LCEntry& entry) = 0;
+  virtual int rm_entry(const DoutPrefixProvider* dpp, optional_yield y,
+                       const std::string& oid, const LCEntry& entry) = 0;
   /** Get a head */
-  virtual int get_head(const std::string& oid, std::unique_ptr<LCHead>* head) = 0;
+  virtual int get_head(const DoutPrefixProvider* dpp, optional_yield y,
+                       const std::string& oid, LCHead& head) = 0;
   /** Store a modified head to the backing store */
-  virtual int put_head(const std::string& oid, LCHead& head) = 0;
+  virtual int put_head(const DoutPrefixProvider* dpp, optional_yield y,
+                       const std::string& oid, const LCHead& head) = 0;
 
   /** Get a serializer for lifecycle */
   virtual std::unique_ptr<LCSerializer> get_serializer(const std::string& lock_name,

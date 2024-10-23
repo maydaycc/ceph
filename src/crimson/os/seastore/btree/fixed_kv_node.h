@@ -148,7 +148,7 @@ struct FixedKVNode : ChildableCachedExtent {
     ceph_assert(iter != copy_dests_by_trans.end());
     auto &copy_dests = static_cast<copy_dests_t&>(*iter);
     auto it = copy_dests.dests_by_key.lower_bound(key);
-    if ((*it)->range.begin > key) {
+    if (it == copy_dests.dests_by_key.end() || (*it)->range.begin > key) {
       ceph_assert(it != copy_dests.dests_by_key.begin());
       --it;
     }
@@ -370,9 +370,11 @@ struct FixedKVNode : ChildableCachedExtent {
       if (is_valid_child_ptr(child)) {
 	return c.cache.template get_extent_viewable_by_trans<T>(c.trans, (T*)child);
       } else {
+        c.cache.account_absent_access(c.trans.get_src());
 	return child_pos_t(&sparent, spos);
       }
     } else {
+      c.cache.account_absent_access(c.trans.get_src());
       return child_pos_t(this, pos);
     }
   }

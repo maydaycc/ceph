@@ -208,10 +208,14 @@ int OSDriver::get_next_or_current(
 string SnapMapper::get_prefix(int64_t pool, snapid_t snap)
 {
   static_assert(sizeof(pool) == 8, "assumed by the formatting code");
+
+  // note: the snap_id is to be formatted as a 64-bit hex number,
+  // and not according to the text representation of snapid_t
+  ceph_assert(snap != CEPH_NOSNAP && snap != CEPH_SNAPDIR);
   return fmt::sprintf("%s%lld_%.16X_",
 		      MAPPING_PREFIX,
 		      pool,
-		      snap);
+		      static_cast<uint64_t>(snap));
 }
 
 string SnapMapper::to_raw_key(
@@ -724,15 +728,60 @@ int SnapMapper::get_snaps(
   return 0;
 }
 
+void SnapMapper::update_snap_map(
+  const pg_log_entry_t& i,
+  MapCacher::Transaction<std::string, ceph::buffer::list> *_t)
+{
+  ceph_assert(i.soid.snap < CEPH_MAXSNAP);
+  dout(20) << __func__ << " " << i << dendl;
+  if (i.is_delete()) {
+    int r = remove_oid(
+      i.soid,
+      _t);
+    if (r)
+      dout(20) << __func__ << " remove_oid " << i.soid << " failed with " << r << dendl;
+    // On removal tolerate missing key corruption
+    ceph_assert(r == 0 || r == -ENOENT);
+  } else if (i.is_update()) {
+    ceph_assert(i.snaps.length() > 0);
+    std::vector<snapid_t> snaps;
+    bufferlist snapbl = i.snaps;
+    auto p = snapbl.cbegin();
+    try {
+      decode(snaps, p);
+    } catch (...) {
+      dout(20) << __func__ << " decode snaps failure on " << i << dendl;
+      snaps.clear();
+    }
+    std::set<snapid_t> _snaps(snaps.begin(), snaps.end());
+
+    if (i.is_clone() || i.is_promote()) {
+      add_oid(
+        i.soid,
+        _snaps,
+        _t);
+    } else if (i.is_modify()) {
+      int r = update_snaps(
+        i.soid,
+        _snaps,
+        0,
+        _t);
+      ceph_assert(r == 0);
+    } else {
+      ceph_assert(i.is_clean());
+    }
+  }
+}
 
 // -- purged snaps --
 
 string SnapMapper::make_purged_snap_key(int64_t pool, snapid_t last)
 {
+  ceph_assert(last != CEPH_NOSNAP && last != CEPH_SNAPDIR);
   return fmt::sprintf("%s_%lld_%016llx",
 		      PURGED_SNAP_PREFIX,
 		      pool,
-		      last);
+		      static_cast<uint64_t>(last));
 }
 
 void SnapMapper::make_purged_snap_key_value(
@@ -950,9 +999,10 @@ void SnapMapper::Scrubber::run()
 
 string SnapMapper::get_legacy_prefix(snapid_t snap)
 {
+  ceph_assert(snap != CEPH_NOSNAP && snap != CEPH_SNAPDIR);
   return fmt::sprintf("%s%.16X_",
 		      LEGACY_MAPPING_PREFIX,
-		      snap);
+		      static_cast<uint64_t>(snap));
 }
 
 string SnapMapper::to_legacy_raw_key(

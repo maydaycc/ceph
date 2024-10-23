@@ -60,22 +60,19 @@ auto make_stack_allocator() {
 const std::string Q_LIST_OBJECT_NAME = "queues_list_object";
 
 struct PublishCommitCompleteArg {
+    PublishCommitCompleteArg(const std::string& _queue_name, CephContext* _cct)
+            : queue_name{_queue_name}, cct{_cct} {}
 
-    PublishCommitCompleteArg(std::string _queue_name, const DoutPrefixProvider *_dpp)
-            : queue_name{std::move(_queue_name)}, dpp{_dpp} {}
-
-    std::string queue_name;
-    const DoutPrefixProvider *dpp;
+    const std::string queue_name;
+    CephContext* const cct;
 };
 
-void publish_commit_completion(rados_completion_t completion, void *arg) {
-    auto *comp_obj = reinterpret_cast<librados::AioCompletionImpl *>(completion);
-    std::unique_ptr<PublishCommitCompleteArg> pcc_arg(reinterpret_cast<PublishCommitCompleteArg *>(arg));
-    if (comp_obj->get_return_value() < 0) {
-        ldpp_dout(pcc_arg->dpp, 1) << "ERROR: failed to commit reservation to queue: "
-                                   << pcc_arg->queue_name << ". error: " << comp_obj->get_return_value()
-                                   << dendl;
-    }
+void publish_commit_completion(rados_completion_t completion, void* arg) {
+  std::unique_ptr<PublishCommitCompleteArg> pcc_args{reinterpret_cast<PublishCommitCompleteArg*>(arg)};
+  if (const auto rc = rados_aio_get_return_value(completion); rc < 0) {
+    ldout(pcc_args->cct, 1) << "ERROR: failed to commit reservation to queue: "
+      << pcc_args->queue_name << ". error: " << rc << dendl;
+  }
 };
 
 class Manager : public DoutPrefixProvider {
@@ -154,6 +151,9 @@ private:
  
     struct token {
       tokens_waiter& waiter;
+      token(const token& other) : waiter(other.waiter) {
+        ++waiter.pending_tokens;
+      }
       token(tokens_waiter& _waiter) : waiter(_waiter) {
         ++waiter.pending_tokens;
       }
@@ -472,11 +472,10 @@ private:
         entries_persistency_tracker& notifs_persistency_tracker = topics_persistency_tracker[queue_name];
         boost::asio::spawn(yield, std::allocator_arg, make_stack_allocator(),
           [this, &notifs_persistency_tracker, &queue_name, entry_idx,
-           total_entries, &end_marker, &remove_entries, &has_error, &waiter,
-           &entry, &needs_migration_vector,
+           total_entries, &end_marker, &remove_entries, &has_error,
+           token = waiter.make_token(), &entry, &needs_migration_vector,
            push_endpoint = push_endpoint.get(),
            &topic_info](boost::asio::yield_context yield) {
-            const auto token = waiter.make_token();
             auto& persistency_tracker = notifs_persistency_tracker[entry.marker];
             auto result =
                 process_entry(this->get_cct()->_conf, persistency_tracker,
@@ -1111,8 +1110,8 @@ int publish_reserve(const DoutPrefixProvider* dpp,
 
       // reload the topic in case it changed since the notification was added
       const std::string& topic_tenant = std::visit(fu2::overload(
-          [] (const rgw_user& u) -> const std::string& { return u.tenant; },
-          [] (const rgw_account_id& a) -> const std::string& { return a; }
+          [] (const rgw_user& u) -> std::string { return u.tenant; },
+          [] (const rgw_account_id& a) -> std::string { return a; }
           ), topic_cfg.owner);
       const RGWPubSub ps(res.store, topic_tenant, site);
       int ret = ps.get_topic(res.dpp, topic_cfg.dest.arn_topic,
@@ -1243,19 +1242,17 @@ int publish_commit(rgw::sal::Object* obj,
       std::vector<buffer::list> bl_data_vec{std::move(bl)};
       librados::ObjectWriteOperation op;
       cls_2pc_queue_commit(op, bl_data_vec, topic.res_id);
-      aio_completion_ptr completion {librados::Rados::aio_create_completion()};
-      auto pcc_arg = make_unique<PublishCommitCompleteArg>(queue_name, dpp);
-      completion->set_complete_callback(pcc_arg.get(), publish_commit_completion);
-      auto &io_ctx = res.store->getRados()->get_notif_pool_ctx();
-      int ret = io_ctx.aio_operate(queue_name, completion.get(), &op);
       topic.res_id = cls_2pc_reservation::NO_ID;
-      if (ret < 0) {
+      auto pcc_arg = make_unique<PublishCommitCompleteArg>(queue_name, dpp->get_cct());
+      aio_completion_ptr completion{librados::Rados::aio_create_completion(pcc_arg.get(), publish_commit_completion)};
+      auto& io_ctx = res.store->getRados()->get_notif_pool_ctx();
+      if (const int ret = io_ctx.aio_operate(queue_name, completion.get(), &op); ret < 0) {
         ldpp_dout(dpp, 1) << "ERROR: failed to commit reservation to queue: "
                           << queue_name << ". error: " << ret << dendl;
         return ret;
       }
+      // args will be released inside the callback
       pcc_arg.release();
-      completion.release();
     } else {
       try {
         // TODO add endpoint LRU cache

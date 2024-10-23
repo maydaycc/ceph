@@ -1,6 +1,13 @@
 import pytest
 
 import smb
+from smb.handler import _FakeEarmarkResolver
+
+
+def _cluster(**kwargs):
+    if 'clustering' not in kwargs:
+        kwargs['clustering'] = smb.enums.SMBClustering.NEVER
+    return smb.resources.Cluster(**kwargs)
 
 
 @pytest.fixture
@@ -26,7 +33,7 @@ def test_shares_empty(thandler):
 
 
 def test_internal_apply_cluster(thandler):
-    cluster = smb.resources.Cluster(
+    cluster = _cluster(
         cluster_id='foo',
         auth_mode=smb.enums.AuthMode.USER,
         user_group_settings=[
@@ -41,7 +48,7 @@ def test_internal_apply_cluster(thandler):
 
 
 def test_cluster_add(thandler):
-    cluster = smb.resources.Cluster(
+    cluster = _cluster(
         cluster_id='foo',
         auth_mode=smb.enums.AuthMode.USER,
         user_group_settings=[
@@ -59,7 +66,7 @@ def test_cluster_add(thandler):
 
 
 def test_internal_apply_cluster_and_share(thandler):
-    cluster = smb.resources.Cluster(
+    cluster = _cluster(
         cluster_id='foo',
         auth_mode=smb.enums.AuthMode.USER,
         user_group_settings=[
@@ -95,6 +102,7 @@ def test_internal_apply_remove_cluster(thandler):
                 'cluster_id': 'foo',
                 'auth_mode': 'user',
                 'intent': 'present',
+                'clustering': 'never',
                 'user_group_settings': [
                     {
                         'source_type': 'empty',
@@ -126,6 +134,7 @@ def test_internal_apply_remove_shares(thandler):
                 'cluster_id': 'foo',
                 'auth_mode': 'user',
                 'intent': 'present',
+                'clustering': 'never',
                 'user_group_settings': [
                     {
                         'source_type': 'empty',
@@ -206,6 +215,7 @@ def test_internal_apply_add_joinauth(thandler):
                 'cluster_id': 'foo',
                 'auth_mode': 'user',
                 'intent': 'present',
+                'clustering': 'never',
                 'user_group_settings': [
                     {
                         'source_type': 'empty',
@@ -237,6 +247,7 @@ def test_internal_apply_add_usergroups(thandler):
                 'cluster_id': 'foo',
                 'auth_mode': 'user',
                 'intent': 'present',
+                'clustering': 'never',
                 'user_group_settings': [
                     {
                         'source_type': 'empty',
@@ -583,7 +594,7 @@ def test_apply_full_cluster_create(thandler):
                 password='Passw0rd',
             ),
         ),
-        smb.resources.Cluster(
+        _cluster(
             cluster_id='mycluster1',
             auth_mode=smb.enums.AuthMode.ACTIVE_DIRECTORY,
             domain_settings=smb.resources.DomainSettings(
@@ -708,7 +719,7 @@ def test_apply_update_password(thandler):
 def test_apply_add_second_cluster(thandler):
     test_apply_full_cluster_create(thandler)
     to_apply = [
-        smb.resources.Cluster(
+        _cluster(
             cluster_id='coolcluster',
             auth_mode=smb.enums.AuthMode.ACTIVE_DIRECTORY,
             domain_settings=smb.resources.DomainSettings(
@@ -870,6 +881,7 @@ def test_apply_remove_all_clusters(thandler):
             self.deployed.remove(service_name)
 
     thandler._orch = FakeOrch()
+    thandler._earmark_resolver = _FakeEarmarkResolver()
     test_apply_full_cluster_create(thandler)
 
     to_apply = [
@@ -880,7 +892,7 @@ def test_apply_remove_all_clusters(thandler):
                 groups=[],
             ),
         ),
-        smb.resources.Cluster(
+        _cluster(
             cluster_id='mycluster2',
             auth_mode=smb.enums.AuthMode.USER,
             user_group_settings=[
@@ -890,7 +902,7 @@ def test_apply_remove_all_clusters(thandler):
                 ),
             ],
         ),
-        smb.resources.Cluster(
+        _cluster(
             cluster_id='mycluster3',
             auth_mode=smb.enums.AuthMode.USER,
             user_group_settings=[
@@ -1166,7 +1178,7 @@ def test_apply_cluster_linked_auth(thandler):
             ),
             linked_to_cluster='mycluster1',
         ),
-        smb.resources.Cluster(
+        _cluster(
             cluster_id='mycluster1',
             auth_mode=smb.enums.AuthMode.ACTIVE_DIRECTORY,
             domain_settings=smb.resources.DomainSettings(
@@ -1228,7 +1240,7 @@ def test_apply_cluster_bad_linked_auth(thandler):
             ),
             linked_to_cluster='mycluster2',
         ),
-        smb.resources.Cluster(
+        _cluster(
             cluster_id='mycluster1',
             auth_mode=smb.enums.AuthMode.ACTIVE_DIRECTORY,
             domain_settings=smb.resources.DomainSettings(
@@ -1261,7 +1273,7 @@ def test_apply_cluster_bad_linked_ug(thandler):
             ),
             linked_to_cluster='mycluster2',
         ),
-        smb.resources.Cluster(
+        _cluster(
             cluster_id='mycluster1',
             auth_mode=smb.enums.AuthMode.USER,
             user_group_settings=[
@@ -1287,7 +1299,7 @@ def test_apply_with_create_only(thandler):
     test_apply_full_cluster_create(thandler)
 
     to_apply = [
-        smb.resources.Cluster(
+        _cluster(
             cluster_id='mycluster1',
             auth_mode=smb.enums.AuthMode.ACTIVE_DIRECTORY,
             domain_settings=smb.resources.DomainSettings(
@@ -1635,6 +1647,7 @@ def test_share_name_in_use(thandler, params):
                 'cluster_id': 'c1',
                 'auth_mode': 'user',
                 'intent': 'present',
+                'clustering': 'never',
                 'user_group_settings': [
                     {
                         'source_type': 'resource',
@@ -1647,6 +1660,7 @@ def test_share_name_in_use(thandler, params):
                 'cluster_id': 'c2',
                 'auth_mode': 'user',
                 'intent': 'present',
+                'clustering': 'never',
                 'user_group_settings': [
                     {
                         'source_type': 'resource',

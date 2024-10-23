@@ -36,6 +36,7 @@ from ceph.deployment.service_spec import (
     ServiceSpec,
     TracingSpec,
     MgmtGatewaySpec,
+    OAuth2ProxySpec
 )
 from cephadm.tests.fixtures import with_host, with_service, _run_cephadm, async_side_effect
 
@@ -48,9 +49,9 @@ from typing import Dict, List
 
 cephadm_root_ca = """-----BEGIN CERTIFICATE-----\\nMIIE7DCCAtSgAwIBAgIUE8b2zZ64geu2ns3Zfn3/4L+Cf6MwDQYJKoZIhvcNAQEL\\nBQAwFzEVMBMGA1UEAwwMY2VwaGFkbS1yb290MB4XDTI0MDYyNjE0NDA1M1oXDTM0\\nMDYyNzE0NDA1M1owFzEVMBMGA1UEAwwMY2VwaGFkbS1yb290MIICIjANBgkqhkiG\\n9w0BAQEFAAOCAg8AMIICCgKCAgEAsZRJsdtTr9GLG1lWFql5SGc46ldFanNJd1Gl\\nqXq5vgZVKRDTmNgAb/XFuNEEmbDAXYIRZolZeYKMHfn0pouPRSel0OsC6/02ZUOW\\nIuN89Wgo3IYleCFpkVIumD8URP3hwdu85plRxYZTtlruBaTRH38lssyCqxaOdEt7\\nAUhvYhcMPJThB17eOSQ73mb8JEC83vB47fosI7IhZuvXvRSuZwUW30rJanWNhyZq\\neS2B8qw2RSO0+77H6gA4ftBnitfsE1Y8/F9Z/f92JOZuSMQXUB07msznPbRJia3f\\nueO8gOc32vxd1A1/Qzp14uX34yEGY9ko2lW226cZO29IVUtXOX+LueQttwtdlpz8\\ne6Npm09pXhXAHxV/OW3M28MdXmobIqT/m9MfkeAErt5guUeC5y8doz6/3VQRjFEn\\nRpN0WkblgnNAQ3DONPc+Qd9Fi/wZV2X7bXoYpNdoWDsEOiE/eLmhG1A2GqU/mneP\\nzQ6u79nbdwTYpwqHpa+PvusXeLfKauzI8lLUJotdXy9EK8iHUofibB61OljYye6B\\nG3b8C4QfGsw8cDb4APZd/6AZYyMx/V3cGZ+GcOV7WvsC8k7yx5Uqasm/kiGQ3EZo\\nuNenNEYoGYrjb8D/8QzqNUTwlEh27/ps80tO7l2GGTvWVZL0PRZbmLDvO77amtOf\\nOiRXMoUCAwEAAaMwMC4wGwYDVR0RBBQwEocQAAAAAAAAAAAAAAAAAAAAATAPBgNV\\nHRMBAf8EBTADAQH/MA0GCSqGSIb3DQEBCwUAA4ICAQAxwzX5AhYEWhTV4VUwUj5+\\nqPdl4Q2tIxRokqyE+cDxoSd+6JfGUefUbNyBxDt0HaBq8obDqqrbcytxnn7mpnDu\\nhtiauY+I4Amt7hqFOiFA4cCLi2mfok6g2vL53tvhd9IrsfflAU2wy7hL76Ejm5El\\nA+nXlkJwps01Whl9pBkUvIbOn3pXX50LT4hb5zN0PSu957rjd2xb4HdfuySm6nW4\\n4GxtVWfmGA6zbC4XMEwvkuhZ7kD2qjkAguGDF01uMglkrkCJT3OROlNBuSTSBGqt\\ntntp5VytHvb7KTF7GttM3ha8/EU2KYaHM6WImQQTrOfiImAktOk4B3lzUZX3HYIx\\n+sByO4P4dCvAoGz1nlWYB2AvCOGbKf0Tgrh4t4jkiF8FHTXGdfvWmjgi1pddCNAy\\nn65WOCmVmLZPERAHOk1oBwqyReSvgoCFo8FxbZcNxJdlhM0Z6hzKggm3O3Dl88Xl\\n5euqJjh2STkBW8Xuowkg1TOs5XyWvKoDFAUzyzeLOL8YSG+gXV22gPTUaPSVAqdb\\nwd0Fx2kjConuC5bgTzQHs8XWA930U3XWZraj21Vaa8UxlBLH4fUro8H5lMSYlZNE\\nJHRNW8BkznAClaFSDG3dybLsrzrBFAu/Qb5zVkT1xyq0YkepGB7leXwq6vjWA5Pw\\nmZbKSphWfh0qipoqxqhfkw==\\n-----END CERTIFICATE-----\\n"""
 
-ceph_generated_cert = """-----BEGIN CERTIFICATE-----\nMIICxjCCAa4CEQDIZSujNBlKaLJzmvntjukjMA0GCSqGSIb3DQEBDQUAMCExDTAL\nBgNVBAoMBENlcGgxEDAOBgNVBAMMB2NlcGhhZG0wHhcNMjIwNzEzMTE0NzA3WhcN\nMzIwNzEwMTE0NzA3WjAhMQ0wCwYDVQQKDARDZXBoMRAwDgYDVQQDDAdjZXBoYWRt\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyyMe4DMA+MeYK7BHZMHB\nq7zjliEOcNgxomjU8qbf5USF7Mqrf6+/87XWqj4pCyAW8x0WXEr6A56a+cmBVmt+\nqtWDzl020aoId6lL5EgLLn6/kMDCCJLq++Lg9cEofMSvcZh+lY2f+1p+C+00xent\nrLXvXGOilAZWaQfojT2BpRnNWWIFbpFwlcKrlg2G0cFjV5c1m6a0wpsQ9JHOieq0\nSvwCixajwq3CwAYuuiU1wjI4oJO4Io1+g8yB3nH2Mo/25SApCxMXuXh4kHLQr/T4\n4hqisvG4uJYgKMcSIrWj5o25mclByGi1UI/kZkCUES94i7Z/3ihx4Bad0AMs/9tw\nFwIDAQABMA0GCSqGSIb3DQEBDQUAA4IBAQAf+pwz7Gd7mDwU2LY0TQXsK6/8KGzh\nHuX+ErOb8h5cOAbvCnHjyJFWf6gCITG98k9nxU9NToG0WYuNm/max1y/54f0dtxZ\npUo6KSNl3w6iYCfGOeUIj8isi06xMmeTgMNzv8DYhDt+P2igN6LenqWTVztogkiV\nxQ5ZJFFLEw4sN0CXnrZX3t5ruakxLXLTLKeE0I91YJvjClSBGkVJq26wOKQNHMhx\npWxeydQ5EgPZY+Aviz5Dnxe8aB7oSSovpXByzxURSabOuCK21awW5WJCGNpmqhWK\nZzACBDEstccj57c4OGV0eayHJRsluVr2e9NHRINZA3qdB37e6gsI1xHo\n-----END CERTIFICATE-----\n"""
+ceph_generated_cert = """-----BEGIN CERTIFICATE-----\\nMIICxjCCAa4CEQDIZSujNBlKaLJzmvntjukjMA0GCSqGSIb3DQEBDQUAMCExDTAL\\nBgNVBAoMBENlcGgxEDAOBgNVBAMMB2NlcGhhZG0wHhcNMjIwNzEzMTE0NzA3WhcN\\nMzIwNzEwMTE0NzA3WjAhMQ0wCwYDVQQKDARDZXBoMRAwDgYDVQQDDAdjZXBoYWRt\\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyyMe4DMA+MeYK7BHZMHB\\nq7zjliEOcNgxomjU8qbf5USF7Mqrf6+/87XWqj4pCyAW8x0WXEr6A56a+cmBVmt+\\nqtWDzl020aoId6lL5EgLLn6/kMDCCJLq++Lg9cEofMSvcZh+lY2f+1p+C+00xent\\nrLXvXGOilAZWaQfojT2BpRnNWWIFbpFwlcKrlg2G0cFjV5c1m6a0wpsQ9JHOieq0\\nSvwCixajwq3CwAYuuiU1wjI4oJO4Io1+g8yB3nH2Mo/25SApCxMXuXh4kHLQr/T4\\n4hqisvG4uJYgKMcSIrWj5o25mclByGi1UI/kZkCUES94i7Z/3ihx4Bad0AMs/9tw\\nFwIDAQABMA0GCSqGSIb3DQEBDQUAA4IBAQAf+pwz7Gd7mDwU2LY0TQXsK6/8KGzh\\nHuX+ErOb8h5cOAbvCnHjyJFWf6gCITG98k9nxU9NToG0WYuNm/max1y/54f0dtxZ\\npUo6KSNl3w6iYCfGOeUIj8isi06xMmeTgMNzv8DYhDt+P2igN6LenqWTVztogkiV\\nxQ5ZJFFLEw4sN0CXnrZX3t5ruakxLXLTLKeE0I91YJvjClSBGkVJq26wOKQNHMhx\\npWxeydQ5EgPZY+Aviz5Dnxe8aB7oSSovpXByzxURSabOuCK21awW5WJCGNpmqhWK\\nZzACBDEstccj57c4OGV0eayHJRsluVr2e9NHRINZA3qdB37e6gsI1xHo\\n-----END CERTIFICATE-----\\n"""
 
-ceph_generated_key = """-----BEGIN PRIVATE KEY-----\nMIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQDLIx7gMwD4x5gr\nsEdkwcGrvOOWIQ5w2DGiaNTypt/lRIXsyqt/r7/ztdaqPikLIBbzHRZcSvoDnpr5\nyYFWa36q1YPOXTbRqgh3qUvkSAsufr+QwMIIkur74uD1wSh8xK9xmH6VjZ/7Wn4L\n7TTF6e2ste9cY6KUBlZpB+iNPYGlGc1ZYgVukXCVwquWDYbRwWNXlzWbprTCmxD0\nkc6J6rRK/AKLFqPCrcLABi66JTXCMjigk7gijX6DzIHecfYyj/blICkLExe5eHiQ\nctCv9PjiGqKy8bi4liAoxxIitaPmjbmZyUHIaLVQj+RmQJQRL3iLtn/eKHHgFp3Q\nAyz/23AXAgMBAAECggEAVoTB3Mm8azlPlaQB9GcV3tiXslSn+uYJ1duCf0sV52dV\nBzKW8s5fGiTjpiTNhGCJhchowqxoaew+o47wmGc2TvqbpeRLuecKrjScD0GkCYyQ\neM2wlshEbz4FhIZdgS6gbuh9WaM1dW/oaZoBNR5aTYo7xYTmNNeyLA/jO2zr7+4W\n5yES1lMSBXpKk7bDGKYY4bsX2b5RLr2Grh2u2bp7hoLABCEvuu8tSQdWXLEXWpXo\njwmV3hc6tabypIa0mj2Dmn2Dmt1ppSO0AZWG/WAizN3f4Z0r/u9HnbVrVmh0IEDw\n3uf2LP5o3msG9qKCbzv3lMgt9mMr70HOKnJ8ohMSKQKBgQDLkNb+0nr152HU9AeJ\nvdz8BeMxcwxCG77iwZphZ1HprmYKvvXgedqWtS6FRU+nV6UuQoPUbQxJBQzrN1Qv\nwKSlOAPCrTJgNgF/RbfxZTrIgCPuK2KM8I89VZv92TSGi362oQA4MazXC8RAWjoJ\nSu1/PHzK3aXOfVNSLrOWvIYeZQKBgQD/dgT6RUXKg0UhmXj7ExevV+c7oOJTDlMl\nvLngrmbjRgPO9VxLnZQGdyaBJeRngU/UXfNgajT/MU8B5fSKInnTMawv/tW7634B\nw3v6n5kNIMIjJmENRsXBVMllDTkT9S7ApV+VoGnXRccbTiDapBThSGd0wri/CuwK\nNWK1YFOeywKBgEDyI/XG114PBUJ43NLQVWm+wx5qszWAPqV/2S5MVXD1qC6zgCSv\nG9NLWN1CIMimCNg6dm7Wn73IM7fzvhNCJgVkWqbItTLG6DFf3/DPODLx1wTMqLOI\nqFqMLqmNm9l1Nec0dKp5BsjRQzq4zp1aX21hsfrTPmwjxeqJZdioqy2VAoGAXR5X\nCCdSHlSlUW8RE2xNOOQw7KJjfWT+WAYoN0c7R+MQplL31rRU7dpm1bLLRBN11vJ8\nMYvlT5RYuVdqQSP6BkrX+hLJNBvOLbRlL+EXOBrVyVxHCkDe+u7+DnC4epbn+N8P\nLYpwqkDMKB7diPVAizIKTBxinXjMu5fkKDs5n+sCgYBbZheYKk5M0sIxiDfZuXGB\nkf4mJdEkTI1KUGRdCwO/O7hXbroGoUVJTwqBLi1tKqLLarwCITje2T200BYOzj82\nqwRkCXGtXPKnxYEEUOiFx9OeDrzsZV00cxsEnX0Zdj+PucQ/J3Cvd0dWUspJfLHJ\n39gnaegswnz9KMQAvzKFdg==\n-----END PRIVATE KEY-----\n"""
+ceph_generated_key = """-----BEGIN PRIVATE KEY-----\\nMIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQDLIx7gMwD4x5gr\\nsEdkwcGrvOOWIQ5w2DGiaNTypt/lRIXsyqt/r7/ztdaqPikLIBbzHRZcSvoDnpr5\\nyYFWa36q1YPOXTbRqgh3qUvkSAsufr+QwMIIkur74uD1wSh8xK9xmH6VjZ/7Wn4L\\n7TTF6e2ste9cY6KUBlZpB+iNPYGlGc1ZYgVukXCVwquWDYbRwWNXlzWbprTCmxD0\\nkc6J6rRK/AKLFqPCrcLABi66JTXCMjigk7gijX6DzIHecfYyj/blICkLExe5eHiQ\\nctCv9PjiGqKy8bi4liAoxxIitaPmjbmZyUHIaLVQj+RmQJQRL3iLtn/eKHHgFp3Q\\nAyz/23AXAgMBAAECggEAVoTB3Mm8azlPlaQB9GcV3tiXslSn+uYJ1duCf0sV52dV\\nBzKW8s5fGiTjpiTNhGCJhchowqxoaew+o47wmGc2TvqbpeRLuecKrjScD0GkCYyQ\\neM2wlshEbz4FhIZdgS6gbuh9WaM1dW/oaZoBNR5aTYo7xYTmNNeyLA/jO2zr7+4W\\n5yES1lMSBXpKk7bDGKYY4bsX2b5RLr2Grh2u2bp7hoLABCEvuu8tSQdWXLEXWpXo\\njwmV3hc6tabypIa0mj2Dmn2Dmt1ppSO0AZWG/WAizN3f4Z0r/u9HnbVrVmh0IEDw\\n3uf2LP5o3msG9qKCbzv3lMgt9mMr70HOKnJ8ohMSKQKBgQDLkNb+0nr152HU9AeJ\\nvdz8BeMxcwxCG77iwZphZ1HprmYKvvXgedqWtS6FRU+nV6UuQoPUbQxJBQzrN1Qv\\nwKSlOAPCrTJgNgF/RbfxZTrIgCPuK2KM8I89VZv92TSGi362oQA4MazXC8RAWjoJ\\nSu1/PHzK3aXOfVNSLrOWvIYeZQKBgQD/dgT6RUXKg0UhmXj7ExevV+c7oOJTDlMl\\nvLngrmbjRgPO9VxLnZQGdyaBJeRngU/UXfNgajT/MU8B5fSKInnTMawv/tW7634B\\nw3v6n5kNIMIjJmENRsXBVMllDTkT9S7ApV+VoGnXRccbTiDapBThSGd0wri/CuwK\\nNWK1YFOeywKBgEDyI/XG114PBUJ43NLQVWm+wx5qszWAPqV/2S5MVXD1qC6zgCSv\\nG9NLWN1CIMimCNg6dm7Wn73IM7fzvhNCJgVkWqbItTLG6DFf3/DPODLx1wTMqLOI\\nqFqMLqmNm9l1Nec0dKp5BsjRQzq4zp1aX21hsfrTPmwjxeqJZdioqy2VAoGAXR5X\\nCCdSHlSlUW8RE2xNOOQw7KJjfWT+WAYoN0c7R+MQplL31rRU7dpm1bLLRBN11vJ8\\nMYvlT5RYuVdqQSP6BkrX+hLJNBvOLbRlL+EXOBrVyVxHCkDe+u7+DnC4epbn+N8P\\nLYpwqkDMKB7diPVAizIKTBxinXjMu5fkKDs5n+sCgYBbZheYKk5M0sIxiDfZuXGB\\nkf4mJdEkTI1KUGRdCwO/O7hXbroGoUVJTwqBLi1tKqLLarwCITje2T200BYOzj82\\nqwRkCXGtXPKnxYEEUOiFx9OeDrzsZV00cxsEnX0Zdj+PucQ/J3Cvd0dWUspJfLHJ\\n39gnaegswnz9KMQAvzKFdg==\\n-----END PRIVATE KEY-----\\n"""
 
 
 class FakeInventory:
@@ -406,6 +407,7 @@ omap_file_lock_retry_sleep_interval = 1.0
 omap_file_update_reloads = 10
 allowed_consecutive_spdk_ping_failures = 1
 spdk_ping_interval_in_seconds = 2.0
+ping_spdk_under_lock = False
 enable_monitor_client = True
 
 [gateway-logs]
@@ -440,8 +442,7 @@ rpc_socket_dir = /var/tmp/
 rpc_socket_name = spdk.sock
 timeout = 60.0
 bdevs_per_cluster = 32
-log_level=
-protocol_log_level = WARNING
+log_level = WARNING
 conn_retries = 10
 transports = tcp
 transport_tcp_options = {{"in_capsule_data_size": 8192, "max_io_qpairs_per_ctrlr": 7}}
@@ -607,6 +608,101 @@ class TestMonitoring:
     @patch("cephadm.services.monitoring.password_hash", lambda password: 'alertmanager_password_hash')
     @patch('cephadm.cert_mgr.CertMgr.get_root_ca', lambda instance: 'cephadm_root_cert')
     @patch('cephadm.cert_mgr.CertMgr.generate_cert', lambda instance, fqdn, ip: ('mycert', 'mykey'))
+    def test_alertmanager_config_when_mgmt_gw_enabled(self, _get_fqdn, _run_cephadm, cephadm_module: CephadmOrchestrator):
+        _run_cephadm.side_effect = async_side_effect(('{}', '', 0))
+
+        fqdn = 'host1.test'
+        _get_fqdn.return_value = fqdn
+
+        with with_host(cephadm_module, 'test'):
+            cephadm_module.secure_monitoring_stack = True
+            cephadm_module.set_store(AlertmanagerService.USER_CFG_KEY, 'alertmanager_user')
+            cephadm_module.set_store(AlertmanagerService.PASS_CFG_KEY, 'alertmanager_plain_password')
+            with with_service(cephadm_module, MgmtGatewaySpec("mgmt-gateway")) as _, \
+                 with_service(cephadm_module, AlertManagerSpec()):
+
+                y = dedent("""
+                # This file is generated by cephadm.
+                # See https://prometheus.io/docs/alerting/configuration/ for documentation.
+
+                global:
+                  resolve_timeout: 5m
+                  http_config:
+                    tls_config:
+                      ca_file: root_cert.pem
+
+                route:
+                  receiver: 'default'
+                  routes:
+                    - group_by: ['alertname']
+                      group_wait: 10s
+                      group_interval: 10s
+                      repeat_interval: 1h
+                      receiver: 'ceph-dashboard'
+
+                receivers:
+                - name: 'default'
+                  webhook_configs:
+                - name: 'ceph-dashboard'
+                  webhook_configs:
+                  - url: 'https://host_fqdn:29443/internal/dashboard/api/prometheus_receiver'
+                """).lstrip()
+
+                web_config = dedent("""
+                tls_server_config:
+                  cert_file: alertmanager.crt
+                  key_file: alertmanager.key
+                  client_auth_type: RequireAndVerifyClientCert
+                  client_ca_file: root_cert.pem
+                basic_auth_users:
+                    alertmanager_user: alertmanager_password_hash
+                """).lstrip()
+
+                _run_cephadm.assert_called_with(
+                    'test',
+                    "alertmanager.test",
+                    ['_orch', 'deploy'],
+                    [],
+                    stdin=json.dumps({
+                        "fsid": "fsid",
+                        "name": 'alertmanager.test',
+                        "image": '',
+                        "deploy_arguments": [],
+                        "params": {
+                            'tcp_ports': [9093, 9094],
+                        },
+                        "meta": {
+                            'service_name': 'alertmanager',
+                            'ports': [9093, 9094],
+                            'ip': None,
+                            'deployed_by': [],
+                            'rank': None,
+                            'rank_generation': None,
+                            'extra_container_args': None,
+                            'extra_entrypoint_args': None,
+                        },
+                        "config_blobs": {
+                            "files": {
+                                "alertmanager.yml": y,
+                                'alertmanager.crt': 'mycert',
+                                'alertmanager.key': 'mykey',
+                                'web.yml': web_config,
+                                'root_cert.pem': 'cephadm_root_cert'
+                            },
+                            'peers': [],
+                            'web_config': '/etc/alertmanager/web.yml',
+                            "use_url_prefix": True,
+                        }
+                    }),
+                    use_current_daemon_image=False,
+                )
+
+    @patch("cephadm.serve.CephadmServe._run_cephadm")
+    @patch("socket.getfqdn")
+    @patch("cephadm.module.CephadmOrchestrator.get_mgr_ip", lambda _: '::1')
+    @patch("cephadm.services.monitoring.password_hash", lambda password: 'alertmanager_password_hash')
+    @patch('cephadm.cert_mgr.CertMgr.get_root_ca', lambda instance: 'cephadm_root_cert')
+    @patch('cephadm.cert_mgr.CertMgr.generate_cert', lambda instance, fqdn, ip: ('mycert', 'mykey'))
     def test_alertmanager_config_security_enabled(self, _get_fqdn, _run_cephadm, cephadm_module: CephadmOrchestrator):
         _run_cephadm.side_effect = async_side_effect(('{}', '', 0))
 
@@ -715,10 +811,10 @@ class TestMonitoring:
                                                     "name": "ceph-exporter.test",
                                                     "image": "",
                                                     "deploy_arguments": [],
-                                                    "params": {},
+                                                    "params": {"tcp_ports": [9926]},
                                                     "meta": {
                                                         "service_name": "ceph-exporter",
-                                                        "ports": [],
+                                                        "ports": [9926],
                                                         "ip": None,
                                                         "deployed_by": [],
                                                         "rank": None,
@@ -736,6 +832,110 @@ class TestMonitoring:
                                                             "ceph-exporter.crt": "mycert",
                                                             "ceph-exporter.key": "mykey"}}}),
                                                 use_current_daemon_image=False)
+
+    @patch("cephadm.serve.CephadmServe._run_cephadm")
+    @patch("mgr_module.MgrModule.get")
+    @patch("socket.getfqdn")
+    def test_node_exporter_config_without_mgmt_gw(
+        self,
+        mock_getfqdn,
+        mock_get,
+        _run_cephadm,
+        cephadm_module: CephadmOrchestrator,
+    ):
+        _run_cephadm.side_effect = async_side_effect(("{}", "", 0))
+        fqdn = 'host1.test'
+        mock_getfqdn.return_value = fqdn
+
+        with with_host(cephadm_module, "test"):
+            with with_service(cephadm_module, MonitoringSpec('node-exporter')):
+                _run_cephadm.assert_called_with(
+                    'test',
+                    "node-exporter.test",
+                    ['_orch', 'deploy'],
+                    [],
+                    stdin=json.dumps({
+                        "fsid": "fsid",
+                        "name": 'node-exporter.test',
+                        "image": '',
+                        "deploy_arguments": [],
+                        "params": {
+                            'tcp_ports': [9100],
+                        },
+                        "meta": {
+                            'service_name': 'node-exporter',
+                            'ports': [9100],
+                            'ip': None,
+                            'deployed_by': [],
+                            'rank': None,
+                            'rank_generation': None,
+                            'extra_container_args': None,
+                            'extra_entrypoint_args': None,
+                        },
+                        "config_blobs": {}
+                    }),
+                    use_current_daemon_image=False,
+                )
+
+    @patch('cephadm.cert_mgr.CertMgr.generate_cert', lambda instance, fqdn, ip: (ceph_generated_cert, ceph_generated_key))
+    @patch('cephadm.cert_mgr.CertMgr.get_root_ca', lambda instance: cephadm_root_ca)
+    @patch("cephadm.serve.CephadmServe._run_cephadm")
+    @patch("socket.getfqdn")
+    def test_node_exporter_config_with_mgmt_gw(
+        self,
+        mock_getfqdn,
+        _run_cephadm,
+        cephadm_module: CephadmOrchestrator,
+    ):
+        _run_cephadm.side_effect = async_side_effect(("{}", "", 0))
+        mock_getfqdn.return_value = 'host1.test'
+
+        y = dedent("""
+        tls_server_config:
+          cert_file: node_exporter.crt
+          key_file: node_exporter.key
+          client_auth_type: RequireAndVerifyClientCert
+          client_ca_file: root_cert.pem
+        """).lstrip()
+
+        with with_host(cephadm_module, "test"):
+            with with_service(cephadm_module, MgmtGatewaySpec("mgmt-gateway")) as _, \
+                 with_service(cephadm_module, MonitoringSpec('node-exporter')):
+                _run_cephadm.assert_called_with(
+                    'test',
+                    "node-exporter.test",
+                    ['_orch', 'deploy'],
+                    [],
+                    stdin=json.dumps({
+                        "fsid": "fsid",
+                        "name": 'node-exporter.test',
+                        "image": '',
+                        "deploy_arguments": [],
+                        "params": {
+                            'tcp_ports': [9100],
+                        },
+                        "meta": {
+                            'service_name': 'node-exporter',
+                            'ports': [9100],
+                            'ip': None,
+                            'deployed_by': [],
+                            'rank': None,
+                            'rank_generation': None,
+                            'extra_container_args': None,
+                            'extra_entrypoint_args': None,
+                        },
+                        "config_blobs": {
+                            "files": {
+                                "web.yml": y,
+                                'root_cert.pem': f"{cephadm_root_ca}",
+                                'node_exporter.crt': f"{ceph_generated_cert}",
+                                'node_exporter.key': f"{ceph_generated_key}",
+                            },
+                            'web_config': '/etc/node-exporter/web.yml',
+                        }
+                    }),
+                    use_current_daemon_image=False,
+                )
 
     @patch("cephadm.serve.CephadmServe._run_cephadm")
     @patch("cephadm.module.CephadmOrchestrator.get_mgr_ip", lambda _: '::1')
@@ -784,7 +984,6 @@ class TestMonitoring:
 
                 scrape_configs:
                   - job_name: 'ceph'
-                    honor_labels: true
                     relabel_configs:
                     - source_labels: [__address__]
                       target_label: cluster
@@ -792,31 +991,32 @@ class TestMonitoring:
                     - source_labels: [instance]
                       target_label: instance
                       replacement: 'ceph_cluster'
+                    honor_labels: true
                     http_sd_configs:
                     - url: http://[::1]:8765/sd/prometheus/sd-config?service=mgr-prometheus
 
                   - job_name: 'node'
+                    relabel_configs:
+                    - source_labels: [__address__]
+                      target_label: cluster
+                      replacement: fsid
                     http_sd_configs:
                     - url: http://[::1]:8765/sd/prometheus/sd-config?service=node-exporter
-                    relabel_configs:
-                    - source_labels: [__address__]
-                      target_label: cluster
-                      replacement: fsid
 
                   - job_name: 'haproxy'
+                    relabel_configs:
+                    - source_labels: [__address__]
+                      target_label: cluster
+                      replacement: fsid
                     http_sd_configs:
                     - url: http://[::1]:8765/sd/prometheus/sd-config?service=haproxy
-                    relabel_configs:
-                    - source_labels: [__address__]
-                      target_label: cluster
-                      replacement: fsid
 
                   - job_name: 'ceph-exporter'
-                    honor_labels: true
                     relabel_configs:
                     - source_labels: [__address__]
                       target_label: cluster
                       replacement: fsid
+                    honor_labels: true
                     http_sd_configs:
                     - url: http://[::1]:8765/sd/prometheus/sd-config?service=ceph-exporter
 
@@ -824,18 +1024,14 @@ class TestMonitoring:
                     http_sd_configs:
                     - url: http://[::1]:8765/sd/prometheus/sd-config?service=nvmeof
 
-                  - job_name: 'federate'
-                    scrape_interval: 15s
-                    honor_labels: true
-                    metrics_path: '/federate'
-                    params:
-                      'match[]':
-                        - '{job="ceph"}'
-                        - '{job="node"}'
-                        - '{job="haproxy"}'
-                        - '{job="ceph-exporter"}'
-                    static_configs:
-                    - targets: []
+                  - job_name: 'nfs'
+                    http_sd_configs:
+                    - url: http://[::1]:8765/sd/prometheus/sd-config?service=nfs
+
+                  - job_name: 'smb'
+                    http_sd_configs:
+                    - url: http://[::1]:8765/sd/prometheus/sd-config?service=smb
+
                 """).lstrip()
 
                 _run_cephadm.assert_called_with(
@@ -928,6 +1124,8 @@ class TestMonitoring:
                 global:
                   scrape_interval: 10s
                   evaluation_interval: 10s
+                  external_labels:
+                    cluster: fsid
 
                 rule_files:
                   - /etc/prometheus/alerting/*
@@ -953,14 +1151,17 @@ class TestMonitoring:
 
                 scrape_configs:
                   - job_name: 'ceph'
+                    relabel_configs:
+                    - source_labels: [__address__]
+                      target_label: cluster
+                      replacement: fsid
+                    - source_labels: [instance]
+                      target_label: instance
+                      replacement: 'ceph_cluster'
                     scheme: https
                     tls_config:
                       ca_file: root_cert.pem
                     honor_labels: true
-                    relabel_configs:
-                    - source_labels: [instance]
-                      target_label: instance
-                      replacement: 'ceph_cluster'
                     http_sd_configs:
                     - url: https://[::1]:8765/sd/prometheus/sd-config?service=mgr-prometheus
                       basic_auth:
@@ -970,6 +1171,10 @@ class TestMonitoring:
                         ca_file: root_cert.pem
 
                   - job_name: 'node'
+                    relabel_configs:
+                    - source_labels: [__address__]
+                      target_label: cluster
+                      replacement: fsid
                     scheme: https
                     tls_config:
                       ca_file: root_cert.pem
@@ -984,6 +1189,10 @@ class TestMonitoring:
                         ca_file: root_cert.pem
 
                   - job_name: 'haproxy'
+                    relabel_configs:
+                    - source_labels: [__address__]
+                      target_label: cluster
+                      replacement: fsid
                     scheme: https
                     tls_config:
                       ca_file: root_cert.pem
@@ -996,6 +1205,10 @@ class TestMonitoring:
                         ca_file: root_cert.pem
 
                   - job_name: 'ceph-exporter'
+                    relabel_configs:
+                    - source_labels: [__address__]
+                      target_label: cluster
+                      replacement: fsid
                     honor_labels: true
                     scheme: https
                     tls_config:
@@ -1015,6 +1228,32 @@ class TestMonitoring:
                       ca_file: root_cert.pem
                     http_sd_configs:
                     - url: https://[::1]:8765/sd/prometheus/sd-config?service=nvmeof
+                      basic_auth:
+                        username: sd_user
+                        password: sd_password
+                      tls_config:
+                        ca_file: root_cert.pem
+
+                  - job_name: 'nfs'
+                    honor_labels: true
+                    scheme: https
+                    tls_config:
+                      ca_file: root_cert.pem
+                    http_sd_configs:
+                    - url: https://[::1]:8765/sd/prometheus/sd-config?service=nfs
+                      basic_auth:
+                        username: sd_user
+                        password: sd_password
+                      tls_config:
+                        ca_file: root_cert.pem
+
+                  - job_name: 'smb'
+                    honor_labels: true
+                    scheme: https
+                    tls_config:
+                      ca_file: root_cert.pem
+                    http_sd_configs:
+                    - url: https://[::1]:8765/sd/prometheus/sd-config?service=smb
                       basic_auth:
                         username: sd_user
                         password: sd_password
@@ -1202,6 +1441,287 @@ class TestMonitoring:
 
     @patch("cephadm.serve.CephadmServe._run_cephadm")
     @patch("cephadm.module.CephadmOrchestrator.get_mgr_ip", lambda _: '1::4')
+    @patch("cephadm.module.CephadmOrchestrator.get_fqdn", lambda a, b: 'host_fqdn')
+    @patch("cephadm.services.monitoring.verify_tls", lambda *_: None)
+    @patch('cephadm.cert_mgr.CertMgr.get_root_ca', lambda instance: cephadm_root_ca)
+    def test_grafana_config_with_mgmt_gw_and_ouath2_proxy(self, _run_cephadm, cephadm_module: CephadmOrchestrator):
+        _run_cephadm.side_effect = async_side_effect(("{}", "", 0))
+
+        y = dedent(f"""
+             # This file is generated by cephadm.
+             apiVersion: 1
+
+             deleteDatasources:
+               - name: 'Dashboard1'
+                 orgId: 1
+
+             datasources:
+               - name: 'Dashboard1'
+                 type: 'prometheus'
+                 access: 'proxy'
+                 orgId: 1
+                 url: 'https://host_fqdn:29443/internal/prometheus'
+                 basicAuth: true
+                 isDefault: true
+                 editable: false
+                 basicAuthUser: admin
+                 jsonData:
+                    graphiteVersion: "1.1"
+                    tlsAuth: false
+                    tlsAuthWithCACert: true
+                    tlsSkipVerify: false
+                 secureJsonData:
+                   basicAuthPassword: admin
+                   tlsCACert: "{cephadm_root_ca}"
+                   tlsClientCert: "{ceph_generated_cert}"
+                   tlsClientKey: "{ceph_generated_key}"
+
+               - name: 'Loki'
+                 type: 'loki'
+                 access: 'proxy'
+                 url: ''
+                 basicAuth: false
+                 isDefault: false
+                 editable: false""").lstrip()
+
+        oauth2_spec = OAuth2ProxySpec(provider_display_name='my_idp_provider',
+                                      client_id='my_client_id',
+                                      client_secret='my_client_secret',
+                                      oidc_issuer_url='http://192.168.10.10:8888/dex',
+                                      cookie_secret='kbAEM9opAmuHskQvt0AW8oeJRaOM2BYy5Loba0kZ0SQ=',
+                                      ssl_certificate=ceph_generated_cert,
+                                      ssl_certificate_key=ceph_generated_key)
+
+        with with_host(cephadm_module, "test"):
+            cephadm_module.cert_key_store.save_cert('grafana_cert', ceph_generated_cert, host='test')
+            cephadm_module.cert_key_store.save_key('grafana_key', ceph_generated_key, host='test')
+            with with_service(cephadm_module, PrometheusSpec("prometheus")) as _, \
+                 with_service(cephadm_module, MgmtGatewaySpec("mgmt-gateway")) as _, \
+                 with_service(cephadm_module, oauth2_spec) as _, \
+                 with_service(cephadm_module, ServiceSpec("mgr")) as _, with_service(
+                     cephadm_module, GrafanaSpec("grafana")
+            ) as _:
+                files = {
+                    'grafana.ini': dedent("""
+                        # This file is generated by cephadm.
+                        [users]
+                          default_theme = light
+                        [auth.anonymous]
+                          enabled = true
+                          org_name = 'Main Org.'
+                          org_role = 'Viewer'
+                        [server]
+                          domain = 'host_fqdn'
+                          protocol = https
+                          cert_file = /etc/grafana/certs/cert_file
+                          cert_key = /etc/grafana/certs/cert_key
+                          http_port = 3000
+                          http_addr = 
+                          root_url = %(protocol)s://%(domain)s:%(http_port)s/grafana/
+                          serve_from_sub_path = true
+                        [snapshots]
+                          external_enabled = false
+                        [security]
+                          disable_initial_admin_creation = true
+                          cookie_secure = true
+                          cookie_samesite = none
+                          allow_embedding = true
+                        [auth]
+                          disable_login_form = true
+                        [auth.proxy]
+                          enabled = true
+                          header_name = X-WEBAUTH-USER
+                          header_property = username
+                          auto_sign_up = true
+                          sync_ttl = 15
+                          whitelist = 1::4
+                          headers_encoded = false
+                          enable_login_token = false
+                          headers = Role:X-WEBAUTH-ROLE\n""").lstrip(),  # noqa: W291
+                    "provisioning/datasources/ceph-dashboard.yml": y,
+                    'certs/cert_file': dedent(f"""
+                        # generated by cephadm\n{ceph_generated_cert}""").lstrip(),
+                    'certs/cert_key': dedent(f"""
+                        # generated by cephadm\n{ceph_generated_key}""").lstrip(),
+                    'provisioning/dashboards/default.yml': dedent("""
+                        # This file is generated by cephadm.
+                        apiVersion: 1
+
+                        providers:
+                          - name: 'Ceph Dashboard'
+                            orgId: 1
+                            folder: ''
+                            type: file
+                            disableDeletion: false
+                            updateIntervalSeconds: 3
+                            editable: false
+                            options:
+                              path: '/etc/grafana/provisioning/dashboards'""").lstrip(),
+                }
+
+                _run_cephadm.assert_called_with(
+                    'test',
+                    "grafana.test",
+                    ['_orch', 'deploy'],
+                    [],
+                    stdin=json.dumps({
+                        "fsid": "fsid",
+                        "name": 'grafana.test',
+                        "image": '',
+                        "deploy_arguments": [],
+                        "params": {
+                            'tcp_ports': [3000],
+                        },
+                        "meta": {
+                            'service_name': 'grafana',
+                            'ports': [3000],
+                            'ip': None,
+                            'deployed_by': [],
+                            'rank': None,
+                            'rank_generation': None,
+                            'extra_container_args': None,
+                            'extra_entrypoint_args': None,
+                        },
+                        "config_blobs": {
+                            "files": files,
+                        },
+                    }),
+                    use_current_daemon_image=False,
+                )
+
+    @patch("cephadm.serve.CephadmServe._run_cephadm")
+    @patch("cephadm.module.CephadmOrchestrator.get_mgr_ip", lambda _: '1::4')
+    @patch("cephadm.module.CephadmOrchestrator.get_fqdn", lambda a, b: 'host_fqdn')
+    @patch("cephadm.services.monitoring.verify_tls", lambda *_: None)
+    @patch('cephadm.cert_mgr.CertMgr.get_root_ca', lambda instance: cephadm_root_ca)
+    def test_grafana_config_with_mgmt_gw(self, _run_cephadm, cephadm_module: CephadmOrchestrator):
+        _run_cephadm.side_effect = async_side_effect(("{}", "", 0))
+
+        y = dedent(f"""
+             # This file is generated by cephadm.
+             apiVersion: 1
+
+             deleteDatasources:
+               - name: 'Dashboard1'
+                 orgId: 1
+
+             datasources:
+               - name: 'Dashboard1'
+                 type: 'prometheus'
+                 access: 'proxy'
+                 orgId: 1
+                 url: 'https://host_fqdn:29443/internal/prometheus'
+                 basicAuth: true
+                 isDefault: true
+                 editable: false
+                 basicAuthUser: admin
+                 jsonData:
+                    graphiteVersion: "1.1"
+                    tlsAuth: false
+                    tlsAuthWithCACert: true
+                    tlsSkipVerify: false
+                 secureJsonData:
+                   basicAuthPassword: admin
+                   tlsCACert: "{cephadm_root_ca}"
+                   tlsClientCert: "{ceph_generated_cert}"
+                   tlsClientKey: "{ceph_generated_key}"
+
+               - name: 'Loki'
+                 type: 'loki'
+                 access: 'proxy'
+                 url: ''
+                 basicAuth: false
+                 isDefault: false
+                 editable: false""").lstrip()
+
+        with with_host(cephadm_module, "test"):
+            cephadm_module.cert_key_store.save_cert('grafana_cert', ceph_generated_cert, host='test')
+            cephadm_module.cert_key_store.save_key('grafana_key', ceph_generated_key, host='test')
+            with with_service(
+                cephadm_module, PrometheusSpec("prometheus")
+            ) as _, with_service(cephadm_module, MgmtGatewaySpec("mgmt-gateway")) as _, \
+                with_service(cephadm_module, ServiceSpec("mgr")) as _, with_service(
+                cephadm_module, GrafanaSpec("grafana")
+            ) as _:
+                files = {
+                    'grafana.ini': dedent("""
+                        # This file is generated by cephadm.
+                        [users]
+                          default_theme = light
+                        [auth.anonymous]
+                          enabled = true
+                          org_name = 'Main Org.'
+                          org_role = 'Viewer'
+                        [server]
+                          domain = 'host_fqdn'
+                          protocol = https
+                          cert_file = /etc/grafana/certs/cert_file
+                          cert_key = /etc/grafana/certs/cert_key
+                          http_port = 3000
+                          http_addr = 
+                          root_url = %(protocol)s://%(domain)s:%(http_port)s/grafana/
+                          serve_from_sub_path = true
+                        [snapshots]
+                          external_enabled = false
+                        [security]
+                          disable_initial_admin_creation = true
+                          cookie_secure = true
+                          cookie_samesite = none
+                          allow_embedding = true\n""").lstrip(),  # noqa: W291
+                    "provisioning/datasources/ceph-dashboard.yml": y,
+                    'certs/cert_file': dedent(f"""
+                        # generated by cephadm\n{ceph_generated_cert}""").lstrip(),
+                    'certs/cert_key': dedent(f"""
+                        # generated by cephadm\n{ceph_generated_key}""").lstrip(),
+                    'provisioning/dashboards/default.yml': dedent("""
+                        # This file is generated by cephadm.
+                        apiVersion: 1
+
+                        providers:
+                          - name: 'Ceph Dashboard'
+                            orgId: 1
+                            folder: ''
+                            type: file
+                            disableDeletion: false
+                            updateIntervalSeconds: 3
+                            editable: false
+                            options:
+                              path: '/etc/grafana/provisioning/dashboards'""").lstrip(),
+                }
+
+                _run_cephadm.assert_called_with(
+                    'test',
+                    "grafana.test",
+                    ['_orch', 'deploy'],
+                    [],
+                    stdin=json.dumps({
+                        "fsid": "fsid",
+                        "name": 'grafana.test',
+                        "image": '',
+                        "deploy_arguments": [],
+                        "params": {
+                            'tcp_ports': [3000],
+                        },
+                        "meta": {
+                            'service_name': 'grafana',
+                            'ports': [3000],
+                            'ip': None,
+                            'deployed_by': [],
+                            'rank': None,
+                            'rank_generation': None,
+                            'extra_container_args': None,
+                            'extra_entrypoint_args': None,
+                        },
+                        "config_blobs": {
+                            "files": files,
+                        },
+                    }),
+                    use_current_daemon_image=False,
+                )
+
+    @patch("cephadm.serve.CephadmServe._run_cephadm")
+    @patch("cephadm.module.CephadmOrchestrator.get_mgr_ip", lambda _: '1::4')
+    @patch("cephadm.module.CephadmOrchestrator.get_fqdn", lambda a, b: 'host_fqdn')
     @patch("cephadm.services.monitoring.verify_tls", lambda *_: None)
     def test_grafana_config(self, _run_cephadm, cephadm_module: CephadmOrchestrator):
         _run_cephadm.side_effect = async_side_effect(("{}", "", 0))
@@ -1224,7 +1744,7 @@ class TestMonitoring:
                           org_name = 'Main Org.'
                           org_role = 'Viewer'
                         [server]
-                          domain = 'test'
+                          domain = 'host_fqdn'
                           protocol = https
                           cert_file = /etc/grafana/certs/cert_file
                           cert_key = /etc/grafana/certs/cert_key
@@ -1236,7 +1756,7 @@ class TestMonitoring:
                           disable_initial_admin_creation = true
                           cookie_secure = true
                           cookie_samesite = none
-                          allow_embedding = true""").lstrip(),  # noqa: W291
+                          allow_embedding = true\n""").lstrip(),  # noqa: W291
                     'provisioning/datasources/ceph-dashboard.yml': dedent("""
                         # This file is generated by cephadm.
                         apiVersion: 1
@@ -1250,7 +1770,7 @@ class TestMonitoring:
                             type: 'prometheus'
                             access: 'proxy'
                             orgId: 1
-                            url: 'http://[1::4]:9095'
+                            url: 'http://host_fqdn:9095'
                             basicAuth: false
                             isDefault: true
                             editable: false
@@ -1332,7 +1852,7 @@ class TestMonitoring:
                                     "  org_name = 'Main Org.'\n"
                                     "  org_role = 'Viewer'\n"
                                     '[server]\n'
-                                    "  domain = 'test'\n"
+                                    "  domain = 'host_fqdn'\n"
                                     '  protocol = https\n'
                                     '  cert_file = /etc/grafana/certs/cert_file\n'
                                     '  cert_key = /etc/grafana/certs/cert_key\n'
@@ -1345,7 +1865,7 @@ class TestMonitoring:
                                     '  admin_password = secure\n'
                                     '  cookie_secure = true\n'
                                     '  cookie_samesite = none\n'
-                                    '  allow_embedding = true',
+                                    '  allow_embedding = true\n',
                                 'provisioning/datasources/ceph-dashboard.yml':
                                     "# This file is generated by cephadm.\n"
                                     "apiVersion: 1\n\n"
@@ -1394,7 +1914,7 @@ class TestMonitoring:
                                     '[users]\n'
                                     '  default_theme = light\n'
                                     '[server]\n'
-                                    "  domain = 'test'\n"
+                                    "  domain = 'host_fqdn'\n"
                                     '  protocol = https\n'
                                     '  cert_file = /etc/grafana/certs/cert_file\n'
                                     '  cert_key = /etc/grafana/certs/cert_key\n'
@@ -1407,7 +1927,7 @@ class TestMonitoring:
                                     '  admin_password = secure\n'
                                     '  cookie_secure = true\n'
                                     '  cookie_samesite = none\n'
-                                    '  allow_embedding = true',
+                                    '  allow_embedding = true\n',
                                 'provisioning/datasources/ceph-dashboard.yml':
                                     "# This file is generated by cephadm.\n"
                                     "apiVersion: 1\n\n"
@@ -2669,6 +3189,7 @@ class TestIngressService:
             '        Enable_RQUOTA = false;\n'
             '        Protocols = 4;\n'
             '        NFS_Port = 2049;\n'
+            '        allow_set_io_flusher_fail = true;\n'
             '        HAProxy_Hosts = 192.168.122.111, 10.10.2.20, 192.168.122.222;\n'
             '}\n'
             '\n'
@@ -3157,6 +3678,8 @@ class TestSMB:
                 'config': '',
                 'keyring': '[client.smb.config.tango.briskly]\nkey = None\n',
                 'config_auth_entity': 'client.smb.config.tango.briskly',
+                'metrics_image': 'quay.io/samba.org/samba-metrics:latest',
+                'metrics_port': 9922,
             },
         }
         with with_host(cephadm_module, 'hostx'):
@@ -3227,6 +3750,8 @@ class TestSMB:
                     '[client.smb.fs.fs2.share3]\nkey = None\n'
                 ),
                 'config_auth_entity': 'client.smb.config.tango.briskly',
+                'metrics_image': 'quay.io/samba.org/samba-metrics:latest',
+                'metrics_port': 9922,
             },
         }
         with with_host(cephadm_module, 'hostx'):
@@ -3251,7 +3776,7 @@ class TestMgmtGateway:
     @patch("cephadm.module.CephadmOrchestrator.get_mgr_ip", lambda _: '::1')
     @patch('cephadm.cert_mgr.CertMgr.get_root_ca', lambda instance: cephadm_root_ca)
     @patch("cephadm.services.mgmt_gateway.get_dashboard_endpoints", lambda _: (["ceph-node-2:8443", "ceph-node-2:8443"], "https"))
-    def test_mgmt_gateway_config(self, get_service_endpoints_mock: List[str], _run_cephadm, cephadm_module: CephadmOrchestrator):
+    def test_mgmt_gw_config_no_auth(self, get_service_endpoints_mock: List[str], _run_cephadm, cephadm_module: CephadmOrchestrator):
 
         def get_services_endpoints(name):
             if name == 'prometheus':
@@ -3297,6 +3822,15 @@ class TestMgmtGateway:
                                          }
 
                                          http {
+
+                                             client_header_buffer_size 32K;
+                                             large_client_header_buffers 4 32k;
+                                             proxy_busy_buffers_size 512k;
+                                             proxy_buffers 4 512k;
+                                             proxy_buffer_size 256K;
+                                             proxy_headers_hash_max_size 1024;
+                                             proxy_headers_hash_bucket_size 128;
+
                                              upstream dashboard_servers {
                                               server ceph-node-2:8443;
                                               server ceph-node-2:8443;
@@ -3363,11 +3897,11 @@ class TestMgmtGateway:
                                                  }
 
                                                  location /grafana {
-                                                     rewrite ^/grafana/(.*) /$1 break;
                                                      proxy_pass https://grafana_servers;
                                                      # clear any Authorization header as Prometheus and Alertmanager are using basic-auth browser
                                                      # will send this header if Grafana is running on the same node as one of those services
                                                      proxy_set_header Authorization "";
+                                                     proxy_buffering off;
                                                  }
 
                                                  location /prometheus {
@@ -3392,12 +3926,16 @@ class TestMgmtGateway:
                                              }"""),
                     "nginx_internal_server.conf": dedent("""
                                              server {
+                                                 ssl_client_certificate /etc/nginx/ssl/ca.crt;
+                                                 ssl_verify_client on;
+
                                                  listen              29443 ssl;
                                                  listen              [::]:29443 ssl;
                                                  ssl_certificate     /etc/nginx/ssl/nginx_internal.crt;
                                                  ssl_certificate_key /etc/nginx/ssl/nginx_internal.key;
-                                                 ssl_protocols       TLSv1.2 TLSv1.3;
-                                                 ssl_ciphers         AES128-SHA:AES256-SHA:RC4-SHA:DES-CBC3-SHA:RC4-MD5;
+                                                 ssl_protocols       TLSv1.3;
+                                                 # from:  https://ssl-config.mozilla.org/#server=nginx
+                                                 ssl_ciphers         ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384:DHE-RSA-CHACHA20-POLY1305;
                                                  ssl_prefer_server_ciphers on;
 
                                                  location /internal/dashboard {
@@ -3447,6 +3985,429 @@ class TestMgmtGateway:
                 _run_cephadm.assert_called_with(
                     'ceph-node',
                     'mgmt-gateway.ceph-node',
+                    ['_orch', 'deploy'],
+                    [],
+                    stdin=json.dumps(expected),
+                    use_current_daemon_image=False,
+                )
+
+    @patch("cephadm.serve.CephadmServe._run_cephadm")
+    @patch("cephadm.services.mgmt_gateway.MgmtGatewayService.get_service_endpoints")
+    @patch("cephadm.services.mgmt_gateway.MgmtGatewayService.get_external_certificates",
+           lambda instance, svc_spec, dspec: (ceph_generated_cert, ceph_generated_key))
+    @patch("cephadm.services.mgmt_gateway.MgmtGatewayService.get_internal_certificates",
+           lambda instance, dspec: (ceph_generated_cert, ceph_generated_key))
+    @patch("cephadm.module.CephadmOrchestrator.get_mgr_ip", lambda _: '::1')
+    @patch('cephadm.cert_mgr.CertMgr.get_root_ca', lambda instance: cephadm_root_ca)
+    @patch("cephadm.services.mgmt_gateway.get_dashboard_endpoints", lambda _: (["ceph-node-2:8443", "ceph-node-2:8443"], "https"))
+    @patch("cephadm.services.mgmt_gateway.MgmtGatewayService.get_oauth2_service_url", lambda _: "https://192.168.100.102:4180")
+    def test_mgmt_gw_config_with_auth(self, get_service_endpoints_mock: List[str], _run_cephadm, cephadm_module: CephadmOrchestrator):
+
+        def get_services_endpoints(name):
+            if name == 'prometheus':
+                return ["192.168.100.100:9095", "192.168.100.101:9095"]
+            elif name == 'grafana':
+                return ["ceph-node-2:3000", "ceph-node-2:3000"]
+            elif name == 'alertmanager':
+                return ["192.168.100.100:9093", "192.168.100.102:9093"]
+            return []
+
+        _run_cephadm.side_effect = async_side_effect(('{}', '', 0))
+        get_service_endpoints_mock.side_effect = get_services_endpoints
+
+        server_port = 5555
+        spec = MgmtGatewaySpec(port=server_port,
+                               ssl_certificate=ceph_generated_cert,
+                               ssl_certificate_key=ceph_generated_key,
+                               enable_auth=True)
+
+        expected = {
+            "fsid": "fsid",
+            "name": "mgmt-gateway.ceph-node",
+            "image": "",
+            "deploy_arguments": [],
+            "params": {"tcp_ports": [server_port]},
+            "meta": {
+                "service_name": "mgmt-gateway",
+                "ports": [server_port],
+                "ip": None,
+                "deployed_by": [],
+                "rank": None,
+                "rank_generation": None,
+                "extra_container_args": None,
+                "extra_entrypoint_args": None
+            },
+            "config_blobs": {
+                "files": {
+                    "nginx.conf": dedent("""
+                                         # This file is generated by cephadm.
+                                         worker_rlimit_nofile 8192;
+
+                                         events {
+                                             worker_connections 4096;
+                                         }
+
+                                         http {
+
+                                             client_header_buffer_size 32K;
+                                             large_client_header_buffers 4 32k;
+                                             proxy_busy_buffers_size 512k;
+                                             proxy_buffers 4 512k;
+                                             proxy_buffer_size 256K;
+                                             proxy_headers_hash_max_size 1024;
+                                             proxy_headers_hash_bucket_size 128;
+
+                                             upstream dashboard_servers {
+                                              server ceph-node-2:8443;
+                                              server ceph-node-2:8443;
+                                             }
+
+                                             upstream grafana_servers {
+                                              server ceph-node-2:3000;
+                                              server ceph-node-2:3000;
+                                             }
+
+                                             upstream prometheus_servers {
+                                              server 192.168.100.100:9095;
+                                              server 192.168.100.101:9095;
+                                             }
+
+                                             upstream alertmanager_servers {
+                                              server 192.168.100.100:9093;
+                                              server 192.168.100.102:9093;
+                                             }
+
+                                             include /etc/nginx_external_server.conf;
+                                             include /etc/nginx_internal_server.conf;
+                                         }"""),
+                    "nginx_external_server.conf": dedent("""
+                                             server {
+                                                 listen                    5555 ssl;
+                                                 listen                    [::]:5555 ssl;
+                                                 ssl_certificate            /etc/nginx/ssl/nginx.crt;
+                                                 ssl_certificate_key /etc/nginx/ssl/nginx.key;
+                                                 ssl_protocols            TLSv1.3;
+                                                 # from:  https://ssl-config.mozilla.org/#server=nginx
+                                                 ssl_ciphers              ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384:DHE-RSA-CHACHA20-POLY1305;
+
+                                                 # Only return Nginx in server header, no extra info will be provided
+                                                 server_tokens             off;
+
+                                                 # Perfect Forward Secrecy(PFS) is frequently compromised without this
+                                                 ssl_prefer_server_ciphers on;
+
+                                                 # Enable SSL session caching for improved performance
+                                                 ssl_session_tickets       off;
+                                                 ssl_session_timeout       1d;
+                                                 ssl_session_cache         shared:SSL:10m;
+
+                                                 # OCSP stapling
+                                                 ssl_stapling              on;
+                                                 ssl_stapling_verify       on;
+                                                 resolver_timeout 5s;
+
+                                                 # Security headers
+                                                 ## X-Content-Type-Options: avoid MIME type sniffing
+                                                 add_header X-Content-Type-Options nosniff;
+                                                 ## Strict Transport Security (HSTS): Yes
+                                                 add_header Strict-Transport-Security "max-age=31536000; includeSubdomains; preload";
+                                                 ## Enables the Cross-site scripting (XSS) filter in browsers.
+                                                 add_header X-XSS-Protection "1; mode=block";
+                                                 ## Content-Security-Policy (CSP): FIXME
+                                                 # add_header Content-Security-Policy "default-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; require-trusted-types-for 'script'; frame-ancestors 'self';";
+
+                                                 location /oauth2/ {
+                                                     proxy_pass https://192.168.100.102:4180;
+                                                     proxy_set_header Host $host;
+                                                     proxy_set_header X-Real-IP $remote_addr;
+                                                     proxy_set_header X-Scheme $scheme;
+                                                     # Check for original-uri header
+                                                     proxy_set_header X-Auth-Request-Redirect $scheme://$host$request_uri;
+                                                 }
+
+                                                 location = /oauth2/auth {
+                                                     internal;
+                                                     proxy_pass https://192.168.100.102:4180;
+                                                     proxy_set_header Host $host;
+                                                     proxy_set_header X-Real-IP $remote_addr;
+                                                     proxy_set_header X-Scheme $scheme;
+                                                     # nginx auth_request includes headers but not body
+                                                     proxy_set_header Content-Length "";
+                                                     proxy_pass_request_body off;
+                                                 }
+
+                                                 location / {
+                                                     proxy_pass https://dashboard_servers;
+                                                     proxy_next_upstream error timeout invalid_header http_500 http_502 http_503 http_504;
+                                                     auth_request /oauth2/auth;
+                                                     error_page 401 = /oauth2/sign_in;
+
+                                                     auth_request_set $email $upstream_http_x_auth_request_email;
+                                                     proxy_set_header X-Email $email;
+
+                                                     auth_request_set $groups $upstream_http_x_auth_request_groups;
+                                                     proxy_set_header X-User-Groups $groups;
+
+                                                     auth_request_set $user $upstream_http_x_auth_request_user;
+                                                     proxy_set_header X-User $user;
+
+                                                     auth_request_set $token $upstream_http_x_auth_request_access_token;
+                                                     proxy_set_header X-Access-Token $token;
+
+                                                     auth_request_set $auth_cookie $upstream_http_set_cookie;
+                                                     add_header Set-Cookie $auth_cookie;
+
+                                                     proxy_set_header Host $host;
+                                                     proxy_set_header X-Real-IP $remote_addr;
+                                                     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                                                     proxy_set_header X-Forwarded-Host $host:80;
+                                                     proxy_set_header X-Forwarded-Port 80;
+                                                     proxy_set_header X-Forwarded-Server $host;
+                                                     proxy_set_header X-Forwarded-Groups $groups;
+
+                                                     proxy_http_version 1.1;
+
+                                                     proxy_set_header X-Forwarded-Proto "https";
+                                                     proxy_ssl_verify off;
+                                                 }
+
+                                                 location /grafana {
+                                                     proxy_pass https://grafana_servers;
+                                                     # clear any Authorization header as Prometheus and Alertmanager are using basic-auth browser
+                                                     # will send this header if Grafana is running on the same node as one of those services
+                                                     proxy_set_header Authorization "";
+                                                     proxy_buffering off;
+                                                     auth_request /oauth2/auth;
+                                                     error_page 401 = /oauth2/sign_in;
+
+                                                     proxy_set_header X-Original-URI "/";
+
+                                                     auth_request_set $user $upstream_http_x_auth_request_user;
+                                                     auth_request_set $email $upstream_http_x_auth_request_email;
+                                                     proxy_set_header X-WEBAUTH-USER $user;
+                                                     proxy_set_header X-WEBAUTH-EMAIL $email;
+
+                                                     # Pass role header to Grafana
+                                                     proxy_set_header X-WEBAUTH-ROLE $http_x_auth_request_role;
+
+                                                     proxy_set_header Host $host;
+                                                     proxy_set_header X-Real-IP $remote_addr;
+                                                     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                                                     proxy_set_header X-Forwarded-Proto $scheme;
+
+                                                     auth_request_set $auth_cookie $upstream_http_set_cookie;
+                                                     add_header Set-Cookie $auth_cookie;
+
+                                                     proxy_set_header X-Forwarded-Proto $scheme;
+                                                 }
+
+                                                 location /prometheus {
+                                                     proxy_pass https://prometheus_servers;
+
+                                                     proxy_ssl_certificate /etc/nginx/ssl/nginx_internal.crt;
+                                                     proxy_ssl_certificate_key /etc/nginx/ssl/nginx_internal.key;
+                                                     proxy_ssl_trusted_certificate /etc/nginx/ssl/ca.crt;
+                                                     proxy_ssl_verify on;
+                                                     proxy_ssl_verify_depth 2;
+                                                     auth_request /oauth2/auth;
+                                                     error_page 401 = /oauth2/sign_in;
+
+                                                     auth_request_set $user $upstream_http_x_auth_request_user;
+                                                     auth_request_set $email $upstream_http_x_auth_request_email;
+                                                     proxy_set_header X-User $user;
+                                                     proxy_set_header X-Email $email;
+
+                                                     auth_request_set $auth_cookie $upstream_http_set_cookie;
+                                                     add_header Set-Cookie $auth_cookie;
+                                                 }
+
+                                                 location /alertmanager {
+                                                     proxy_pass https://alertmanager_servers;
+
+                                                     proxy_ssl_certificate /etc/nginx/ssl/nginx_internal.crt;
+                                                     proxy_ssl_certificate_key /etc/nginx/ssl/nginx_internal.key;
+                                                     proxy_ssl_trusted_certificate /etc/nginx/ssl/ca.crt;
+                                                     proxy_ssl_verify on;
+                                                     proxy_ssl_verify_depth 2;
+                                                     auth_request /oauth2/auth;
+                                                     error_page 401 = /oauth2/sign_in;
+
+                                                     auth_request_set $user $upstream_http_x_auth_request_user;
+                                                     auth_request_set $email $upstream_http_x_auth_request_email;
+                                                     proxy_set_header X-User $user;
+                                                     proxy_set_header X-Email $email;
+
+                                                     auth_request_set $auth_cookie $upstream_http_set_cookie;
+                                                     add_header Set-Cookie $auth_cookie;
+                                                 }
+                                             }"""),
+                    "nginx_internal_server.conf": dedent("""
+                                             server {
+                                                 ssl_client_certificate /etc/nginx/ssl/ca.crt;
+                                                 ssl_verify_client on;
+
+                                                 listen              29443 ssl;
+                                                 listen              [::]:29443 ssl;
+                                                 ssl_certificate     /etc/nginx/ssl/nginx_internal.crt;
+                                                 ssl_certificate_key /etc/nginx/ssl/nginx_internal.key;
+                                                 ssl_protocols       TLSv1.3;
+                                                 # from:  https://ssl-config.mozilla.org/#server=nginx
+                                                 ssl_ciphers         ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384:DHE-RSA-CHACHA20-POLY1305;
+                                                 ssl_prefer_server_ciphers on;
+
+                                                 location /internal/dashboard {
+                                                     rewrite ^/internal/dashboard/(.*) /$1 break;
+                                                     proxy_pass https://dashboard_servers;
+                                                     proxy_next_upstream error timeout invalid_header http_500 http_502 http_503 http_504;
+                                                 }
+
+                                                 location /internal/grafana {
+                                                     rewrite ^/internal/grafana/(.*) /$1 break;
+                                                     proxy_pass https://grafana_servers;
+                                                 }
+
+                                                 location /internal/prometheus {
+                                                     rewrite ^/internal/prometheus/(.*) /prometheus/$1 break;
+                                                     proxy_pass https://prometheus_servers;
+
+                                                     proxy_ssl_certificate /etc/nginx/ssl/nginx_internal.crt;
+                                                     proxy_ssl_certificate_key /etc/nginx/ssl/nginx_internal.key;
+                                                     proxy_ssl_trusted_certificate /etc/nginx/ssl/ca.crt;
+                                                     proxy_ssl_verify on;
+                                                     proxy_ssl_verify_depth 2;
+                                                 }
+
+                                                 location /internal/alertmanager {
+                                                     rewrite ^/internal/alertmanager/(.*) /alertmanager/$1 break;
+                                                     proxy_pass https://alertmanager_servers;
+
+                                                     proxy_ssl_certificate /etc/nginx/ssl/nginx_internal.crt;
+                                                     proxy_ssl_certificate_key /etc/nginx/ssl/nginx_internal.key;
+                                                     proxy_ssl_trusted_certificate /etc/nginx/ssl/ca.crt;
+                                                     proxy_ssl_verify on;
+                                                     proxy_ssl_verify_depth 2;
+                                                 }
+                                             }"""),
+                    "nginx_internal.crt": f"{ceph_generated_cert}",
+                    "nginx_internal.key": f"{ceph_generated_key}",
+                    "ca.crt": f"{cephadm_root_ca}",
+                    "nginx.crt": f"{ceph_generated_cert}",
+                    "nginx.key": f"{ceph_generated_key}",
+                }
+            }
+        }
+
+        with with_host(cephadm_module, 'ceph-node'):
+            with with_service(cephadm_module, spec):
+                _run_cephadm.assert_called_with(
+                    'ceph-node',
+                    'mgmt-gateway.ceph-node',
+                    ['_orch', 'deploy'],
+                    [],
+                    stdin=json.dumps(expected),
+                    use_current_daemon_image=False,
+                )
+
+    @patch("cephadm.serve.CephadmServe._run_cephadm")
+    @patch("cephadm.services.mgmt_gateway.MgmtGatewayService.get_service_endpoints")
+    @patch("cephadm.services.mgmt_gateway.MgmtGatewayService.get_external_certificates",
+           lambda instance, svc_spec, dspec: (ceph_generated_cert, ceph_generated_key))
+    @patch("cephadm.services.mgmt_gateway.MgmtGatewayService.get_internal_certificates",
+           lambda instance, dspec: (ceph_generated_cert, ceph_generated_key))
+    @patch("cephadm.module.CephadmOrchestrator.get_mgr_ip", lambda _: '::1')
+    @patch('cephadm.cert_mgr.CertMgr.get_root_ca', lambda instance: cephadm_root_ca)
+    @patch("cephadm.services.mgmt_gateway.get_dashboard_endpoints", lambda _: (["ceph-node-2:8443", "ceph-node-2:8443"], "https"))
+    def test_oauth2_proxy_service(self, get_service_endpoints_mock: List[str], _run_cephadm, cephadm_module: CephadmOrchestrator):
+
+        def get_services_endpoints(name):
+            if name == 'prometheus':
+                return ["192.168.100.100:9095", "192.168.100.101:9095"]
+            elif name == 'grafana':
+                return ["ceph-node-2:3000", "ceph-node-2:3000"]
+            elif name == 'alertmanager':
+                return ["192.168.100.100:9093", "192.168.100.102:9093"]
+            return []
+
+        _run_cephadm.side_effect = async_side_effect(('{}', '', 0))
+        get_service_endpoints_mock.side_effect = get_services_endpoints
+
+        server_port = 5555
+        mgmt_gw_spec = MgmtGatewaySpec(port=server_port,
+                                       ssl_certificate=ceph_generated_cert,
+                                       ssl_certificate_key=ceph_generated_key,
+                                       enable_auth=True)
+
+        oauth2_spec = OAuth2ProxySpec(provider_display_name='my_idp_provider',
+                                      client_id='my_client_id',
+                                      client_secret='my_client_secret',
+                                      oidc_issuer_url='http://192.168.10.10:8888/dex',
+                                      cookie_secret='kbAEM9opAmuHskQvt0AW8oeJRaOM2BYy5Loba0kZ0SQ=',
+                                      ssl_certificate=ceph_generated_cert,
+                                      ssl_certificate_key=ceph_generated_key)
+        expected = {
+            "fsid": "fsid",
+            "name": "oauth2-proxy.ceph-node",
+            "image": "",
+            "deploy_arguments": [],
+            "params": {"tcp_ports": [4180]},
+            "meta": {
+                "service_name": "oauth2-proxy",
+                "ports": [4180],
+                "ip": None,
+                "deployed_by": [],
+                "rank": None,
+                "rank_generation": None,
+                "extra_container_args": None,
+                "extra_entrypoint_args": None
+            },
+            "config_blobs": {
+                "files": {
+                    "oauth2-proxy.conf": dedent("""
+                                         # Listen on port 4180 for incoming HTTP traffic.
+                                         https_address= "0.0.0.0:4180"
+
+                                         skip_provider_button= true
+                                         skip_jwt_bearer_tokens= true
+
+                                         # OIDC provider configuration.
+                                         provider= "oidc"
+                                         provider_display_name= "my_idp_provider"
+                                         client_id= "my_client_id"
+                                         client_secret= "my_client_secret"
+                                         oidc_issuer_url= "http://192.168.10.10:8888/dex"
+                                         redirect_url= "https://host_fqdn:5555/oauth2/callback"
+
+                                         ssl_insecure_skip_verify=true
+
+                                         # following configuration is needed to avoid getting Forbidden
+                                         # when using chrome like browsers as they handle 3rd party cookies
+                                         # more strictly than Firefox
+                                         cookie_samesite= "none"
+                                         cookie_secure= true
+                                         cookie_expire= "5h"
+                                         cookie_refresh= "2h"
+
+                                         pass_access_token= true
+                                         pass_authorization_header= true
+                                         pass_basic_auth= true
+                                         pass_user_headers= true
+                                         set_xauthrequest= true
+
+                                         # Secret value for encrypting cookies.
+                                         cookie_secret= "kbAEM9opAmuHskQvt0AW8oeJRaOM2BYy5Loba0kZ0SQ="
+                                         email_domains= "*"
+                                         whitelist_domains= "1::4,ceph-node\""""),
+                    "oauth2-proxy.crt": f"{ceph_generated_cert}",
+                    "oauth2-proxy.key": f"{ceph_generated_key}",
+                }
+            }
+        }
+
+        with with_host(cephadm_module, 'ceph-node'):
+            with with_service(cephadm_module, mgmt_gw_spec) as _, with_service(cephadm_module, oauth2_spec):
+                _run_cephadm.assert_called_with(
+                    'ceph-node',
+                    'oauth2-proxy.ceph-node',
                     ['_orch', 'deploy'],
                     [],
                     stdin=json.dumps(expected),

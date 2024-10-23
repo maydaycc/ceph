@@ -160,6 +160,36 @@ class TestCephadm(object):
         match_glob(new_mgr, 'myhost.*')
 
     @mock.patch("cephadm.serve.CephadmServe._run_cephadm", _run_cephadm('[]'))
+    def test_valid_url(self, cephadm_module):
+        # Test with valid IPv4 and IPv6 urls
+        test_cases = [
+            ("http://192.168.100.100:9090", "prometheus multi-cluster targets updated"),  # Valid IPv4
+            ("https://192.168.100.100/prometheus", "prometheus multi-cluster targets updated"),       # Valid IPv4 without port
+            ("http://[2001:0db8:85a3::8a2e:0370:7334]:9090", "prometheus multi-cluster targets updated"),  # Valid IPv6 with port
+            ("https://[2001:0db8:85a3::8a2e:0370:7334]/prometheus", "prometheus multi-cluster targets updated"),  # Valid IPv6 without port
+        ]
+        with with_host(cephadm_module, 'test'):
+            with with_service(cephadm_module, ServiceSpec(service_type='prometheus'), CephadmOrchestrator.apply_prometheus, 'test'):
+                for url, expected_output in test_cases:
+                    c = cephadm_module.set_prometheus_target(url)
+                    assert wait(cephadm_module, c) == expected_output
+
+    @mock.patch("cephadm.serve.CephadmServe._run_cephadm", _run_cephadm('[]'))
+    def test_invalid_url(self, cephadm_module):
+        # Test with invalid IPv4 and IPv6 urls
+        test_cases = [
+            ("https://192.168.100.100:99999", "Invalid url. Port out of range 0-65535"),  # Port out of range
+            ("http://[2001:0db8:85a3::8a2e:0370:7334]:99999", "Invalid url. Port out of range 0-65535"),  # IPv6 with invalid port
+            ("https://192.168.100.999:9090", "Invalid url. '192.168.100.999' does not appear to be an IPv4 or IPv6 address"),  # Invalid IPv4
+            ("http://[fe80:2030:31:24]:9090", "Invalid url. 'fe80:2030:31:24' does not appear to be an IPv4 or IPv6 address")  # Invalid IPv6
+        ]
+        with with_host(cephadm_module, 'test'):
+            with with_service(cephadm_module, ServiceSpec(service_type='prometheus'), CephadmOrchestrator.apply_prometheus, 'test'):
+                for url, expected_output in test_cases:
+                    c = cephadm_module.set_prometheus_target(url)
+                    assert wait(cephadm_module, c) == expected_output
+
+    @mock.patch("cephadm.serve.CephadmServe._run_cephadm", _run_cephadm('[]'))
     def test_host(self, cephadm_module):
         assert wait(cephadm_module, cephadm_module.get_hosts()) == []
         with with_host(cephadm_module, 'test'):
@@ -854,7 +884,7 @@ class TestCephadm(object):
                 with mock.patch("cephadm.module.CephadmOrchestrator.mon_command") as _mon_cmd:
                     CephadmServe(cephadm_module)._check_daemons()
                     _mon_cmd.assert_any_call(
-                        {'prefix': 'dashboard set-grafana-api-url', 'value': 'https://[1::4]:3000'},
+                        {'prefix': 'dashboard set-grafana-api-url', 'value': 'https://host_fqdn:3000'},
                         None)
 
     @mock.patch("cephadm.serve.CephadmServe._run_cephadm", _run_cephadm('{}'))
@@ -1727,6 +1757,7 @@ class TestCephadm(object):
             'iscsi_ssl_cert': False,
             'ingress_ssl_cert': False,
             'mgmt_gw_cert': False,
+            'oauth2_proxy_cert': False,
             'cephadm_root_ca_cert': False,
             'grafana_cert': False,
             'nvmeof_client_cert': False,
@@ -1779,6 +1810,7 @@ class TestCephadm(object):
         expected_ls = {
             'grafana_key': False,
             'mgmt_gw_key': False,
+            'oauth2_proxy_key': False,
             'cephadm_root_ca_key': False,
             'iscsi_ssl_key': False,
             'ingress_ssl_key': False,
@@ -2008,7 +2040,7 @@ class TestCephadm(object):
             ), CephadmOrchestrator.apply_iscsi),
             (CustomContainerSpec(
                 service_id='hello-world',
-                image='docker.io/library/hello-world:latest',
+                image='quay.io/hello-world/hello-world:latest',
                 uid=65534,
                 gid=65534,
                 dirs=['foo/bar'],

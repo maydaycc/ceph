@@ -159,14 +159,6 @@ sc::result PrimaryIdle::react(const StartScrub&)
   return transit<ReservingReplicas>();
 }
 
-sc::result PrimaryIdle::react(const AfterRepairScrub&)
-{
-  dout(10) << "PrimaryIdle::react(const AfterRepairScrub&)" << dendl;
-  DECLARE_LOCALS;
-  scrbr->reset_epoch();
-  return transit<ReservingReplicas>();
-}
-
 void PrimaryIdle::clear_state(const FullReset&) {
   dout(10) << "PrimaryIdle::react(const FullReset&): clearing state flags"
            << dendl;
@@ -207,6 +199,7 @@ sc::result Session::react(const IntervalChanged&)
 
   ceph_assert(m_reservations);
   m_reservations->discard_remote_reservations();
+  m_abort_reason = delay_cause_t::interval;
   return transit<NotActive>();
 }
 
@@ -308,7 +301,8 @@ ActiveScrubbing::~ActiveScrubbing()
   // completed successfully), we use it now to set the 'failed scrub' duration.
   if (session.m_session_started_at != ScrubTimePoint{}) {
     // delay the next invocation of the scrubber on this target
-    scrbr->on_mid_scrub_abort(Scrub::delay_cause_t::aborted);
+    scrbr->on_mid_scrub_abort(
+	session.m_abort_reason.value_or(Scrub::delay_cause_t::aborted));
 
     auto logged_duration = ScrubClock::now() - session.m_session_started_at;
     session.m_perf_set->tinc(scrbcnt_failed_elapsed, logged_duration);

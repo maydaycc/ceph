@@ -10,6 +10,7 @@
 #include <boost/range/algorithm/copy.hpp>
 #include <fmt/format.h>
 #include <fmt/ostream.h>
+#include "include/utime_fmt.h"
 #include <seastar/core/print.hh>
 
 #include "messages/MOSDOp.h"
@@ -29,6 +30,7 @@
 #include "replicated_recovery_backend.h"
 #include "ec_backend.h"
 #include "exceptions.h"
+#include "osd/object_state_fmt.h"
 
 namespace {
   seastar::logger& logger() {
@@ -151,54 +153,6 @@ PGBackend::load_metadata(const hobject_t& oid)
       }));
 }
 
-PGBackend::rep_op_fut_t
-PGBackend::mutate_object(
-  std::set<pg_shard_t> pg_shards,
-  crimson::osd::ObjectContextRef &&obc,
-  ceph::os::Transaction&& txn,
-  osd_op_params_t&& osd_op_p,
-  epoch_t min_epoch,
-  epoch_t map_epoch,
-  std::vector<pg_log_entry_t>&& log_entries)
-{
-  logger().trace("mutate_object: num_ops={}", txn.get_num_ops());
-  if (obc->obs.exists) {
-    obc->obs.oi.prior_version = obc->obs.oi.version;
-    obc->obs.oi.version = osd_op_p.at_version;
-    if (osd_op_p.user_modify)
-      obc->obs.oi.user_version = osd_op_p.at_version.version;
-    obc->obs.oi.last_reqid = osd_op_p.req_id;
-    obc->obs.oi.mtime = osd_op_p.mtime;
-    obc->obs.oi.local_mtime = ceph_clock_now();
-
-    // object_info_t
-    {
-      ceph::bufferlist osv;
-      obc->obs.oi.encode_no_oid(osv, CEPH_FEATURES_ALL);
-      // TODO: get_osdmap()->get_features(CEPH_ENTITY_TYPE_OSD, nullptr));
-      txn.setattr(coll->get_cid(), ghobject_t{obc->obs.oi.soid}, OI_ATTR, osv);
-    }
-
-    // snapset
-    if (obc->obs.oi.soid.snap == CEPH_NOSNAP) {
-      logger().debug("final snapset {} in {}",
-        obc->ssc->snapset, obc->obs.oi.soid);
-      ceph::bufferlist bss;
-      encode(obc->ssc->snapset, bss);
-      txn.setattr(coll->get_cid(), ghobject_t{obc->obs.oi.soid}, SS_ATTR, bss);
-      obc->ssc->exists = true;
-    } else {
-      logger().debug("no snapset (this is a clone)");
-    }
-  } else {
-    // reset cached ObjectState without enforcing eviction
-    obc->obs.oi = object_info_t(obc->obs.oi.soid);
-  }
-  return _submit_transaction(
-    std::move(pg_shards), obc->obs.oi.soid, std::move(txn),
-    std::move(osd_op_p), min_epoch, map_epoch, std::move(log_entries));
-}
-
 static inline bool _read_verify_data(
   const object_info_t& oi,
   const ceph::bufferlist& data)
@@ -298,7 +252,7 @@ PGBackend::sparse_read(const ObjectState& os, OSDOp& osd_op,
     adjusted_length = adjusted_size - offset;
   }
   logger().trace("sparse_read: {} {}~{}",
-                 os.oi.soid, op.extent.offset, op.extent.length);
+                 os.oi.soid, (uint64_t)op.extent.offset, (uint64_t)op.extent.length);
   return interruptor::make_interruptible(store->fiemap(coll, ghobject_t{os.oi.soid},
     offset, adjusted_length)).safe_then_interruptible(
     [&delta_stats, &os, &osd_op, this](auto&& m) {
@@ -313,7 +267,7 @@ PGBackend::sparse_read(const ObjectState& os, OSDOp& osd_op,
           ceph::encode(extents, osd_op.outdata);
           encode_destructively(bl, osd_op.outdata);
           logger().trace("sparse_read got {} bytes from object {}",
-                         osd_op.op.extent.length, os.oi.soid);
+                         (uint64_t)osd_op.op.extent.length, os.oi.soid);
          delta_stats.num_rd++;
          delta_stats.num_rd_kb += shift_round_up(osd_op.op.extent.length, 10);
           return read_errorator::make_ready_future<>();
@@ -395,7 +349,7 @@ PGBackend::checksum(const ObjectState& os, OSDOp& osd_op)
     auto& checksum = osd_op.op.checksum;
     if (read_bl.length() != checksum.length) {
       logger().warn("checksum: bytes read {} != {}",
-                        read_bl.length(), checksum.length);
+                        read_bl.length(), (uint64_t)checksum.length);
       return crimson::ct_error::invarg::make();
     }
     // calculate its checksum and put the result in outdata
@@ -975,6 +929,7 @@ PGBackend::create_iertr::future<> PGBackend::create(
   ceph::os::Transaction& txn,
   object_stat_sum_t& delta_stats)
 {
+  logger().debug("{} obc existed: {}, osd_op {}", __func__, os, osd_op);
   if (os.exists && !os.oi.is_whiteout() &&
       (osd_op.op.flags & CEPH_OSD_OP_FLAG_EXCL)) {
     // this is an exclusive create
@@ -1334,7 +1289,7 @@ void PGBackend::clone(
   const ObjectState& d_os,
   ceph::os::Transaction& txn)
 {
-  // See OpsExecutor::execute_clone documentation
+  // See OpsExecuter::execute_clone documentation
   txn.clone(coll->get_cid(), ghobject_t{os.oi.soid}, ghobject_t{d_os.oi.soid});
   {
     ceph::bufferlist bv;

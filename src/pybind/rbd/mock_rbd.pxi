@@ -228,6 +228,9 @@ cdef nogil:
         _RBD_GROUP_SNAP_STATE_INCOMPLETE "RBD_GROUP_SNAP_STATE_INCOMPLETE"
         _RBD_GROUP_SNAP_STATE_COMPLETE "RBD_GROUP_SNAP_STATE_COMPLETE"
 
+    ctypedef enum rbd_group_snap_namespace_type_t:
+        _RBD_GROUP_SNAP_NAMESPACE_TYPE_USER "RBD_GROUP_SNAP_NAMESPACE_TYPE_USER"
+
     ctypedef struct rbd_group_image_snap_info_t:
         char *image_name
         int64_t pool_id
@@ -238,6 +241,7 @@ cdef nogil:
         char *name
         char *image_snap_name
         rbd_group_snap_state_t state
+        rbd_group_snap_namespace_type_t namespace_type
         size_t image_snaps_count
         rbd_group_image_snap_info_t *image_snaps
 
@@ -435,6 +439,14 @@ cdef nogil:
     int rbd_mirror_mode_get(rados_ioctx_t io, rbd_mirror_mode_t *mirror_mode):
         pass
     int rbd_mirror_mode_set(rados_ioctx_t io, rbd_mirror_mode_t mirror_mode):
+        pass
+
+    int rbd_mirror_remote_namespace_get(rados_ioctx_t io_ctx,
+                                        char *remote_namespace,
+                                        size_t *max_len):
+        pass
+    int rbd_mirror_remote_namespace_set(rados_ioctx_t io_ctx,
+                                        const char *remote_namespace):
         pass
 
     int rbd_mirror_uuid_get(rados_ioctx_t io_ctx, char *mirror_uuid,

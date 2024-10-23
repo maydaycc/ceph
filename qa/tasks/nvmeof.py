@@ -17,14 +17,14 @@ from tasks.thrasher import Thrasher
 log = logging.getLogger(__name__)
 
 conf_file = '/etc/ceph/nvmeof.env'
-
+gw_yaml_file = '/etc/ceph/nvmeof-gw.yaml'
 
 class Nvmeof(Task):
     """
     Setup nvmeof gateway on client and then share gateway config to target host.
 
         - nvmeof:
-            client: client.0
+            installer: host.a     // or 'nvmeof.nvmeof.a' 
             version: default
             rbd:
                 pool_name: mypool
@@ -32,21 +32,18 @@ class Nvmeof(Task):
             gateway_config:
                 namespaces_count: 10
                 cli_version: latest
+                create_mtls_secrets: False 
                     
     """
 
     def setup(self):
         super(Nvmeof, self).setup()
         try:
-            self.client = self.config['client']
+            host = self.config['installer']
         except KeyError:
-            raise ConfigError('nvmeof requires a client to connect with')
-
-        self.cluster_name, type_, self.client_id = misc.split_role(self.client)
-        if type_ != 'client':
-            msg = 'client role ({0}) must be a client'.format(self.client)
-            raise ConfigError(msg)
-        self.remote = get_remote_for_role(self.ctx, self.client)
+            raise ConfigError('nvmeof requires a installer host to deploy service') 
+        self.cluster_name, _, _ = misc.split_role(host)
+        self.remote = get_remote_for_role(self.ctx, host)  
 
     def begin(self):
         super(Nvmeof, self).begin()
@@ -64,6 +61,8 @@ class Nvmeof(Task):
 
         gateway_config = self.config.get('gateway_config', {})
         self.cli_image = gateway_config.get('cli_image', 'quay.io/ceph/nvmeof-cli:latest')
+        self.groups_count = gateway_config.get('groups_count', 1)
+        self.groups_prefix = gateway_config.get('groups_prefix', 'mygroup') 
         self.nqn_prefix = gateway_config.get('subsystem_nqn_prefix', 'nqn.2016-06.io.spdk:cnode')
         self.subsystems_count = gateway_config.get('subsystems_count', 1) 
         self.namespaces_count = gateway_config.get('namespaces_count', 1) # namepsaces per subsystem
@@ -71,6 +70,7 @@ class Nvmeof(Task):
         self.serial = gateway_config.get('serial', 'SPDK00000000000001')
         self.port = gateway_config.get('port', '4420')
         self.srport = gateway_config.get('srport', '5500')
+        self.create_mtls_secrets = gateway_config.get('create_mtls_secrets', False)
 
     def deploy_nvmeof(self):
         """
@@ -114,11 +114,17 @@ class Nvmeof(Task):
                 'rbd', 'pool', 'init', poolname
             ])
 
-            log.info(f'[nvmeof]: ceph orch apply nvmeof {poolname}')
-            _shell(self.ctx, self.cluster_name, self.remote, [
-                'ceph', 'orch', 'apply', 'nvmeof', poolname, 
-                '--placement', str(len(nodes)) + ';' + ';'.join(nodes)
-            ])
+            group_to_nodes = defaultdict(list)
+            for index, node in enumerate(nodes):
+                group_name = self.groups_prefix + str(index % int(self.groups_count))
+                group_to_nodes[group_name] += [node]
+            for group_name in group_to_nodes:
+                gp_nodes = group_to_nodes[group_name]
+                log.info(f'[nvmeof]: ceph orch apply nvmeof {poolname} {group_name}')
+                _shell(self.ctx, self.cluster_name, self.remote, [
+                    'ceph', 'orch', 'apply', 'nvmeof', poolname, group_name,
+                    '--placement', ';'.join(gp_nodes)
+                ])
 
             total_images = int(self.namespaces_count) * int(self.subsystems_count)
             log.info(f'[nvmeof]: creating {total_images} images')
@@ -131,6 +137,9 @@ class Nvmeof(Task):
 
         for role, i in daemons.items():
             remote, id_ = i
+            _shell(self.ctx, self.cluster_name, remote, [
+                'ceph', 'orch', 'ls', 'nvmeof', '--export', run.Raw('>'), gw_yaml_file
+            ])
             self.ctx.daemons.register_daemon(
                 remote, 'nvmeof', id_,
                 cluster=self.cluster_name,
@@ -140,7 +149,38 @@ class Nvmeof(Task):
                 started=True,
             )
         log.info("[nvmeof]: executed deploy_nvmeof successfully!")
-        
+
+    def write_mtls_config(self, gateway_ips):
+        log.info("[nvmeof]: writing mtls config...")
+        allowed_ips = ""
+        for ip in gateway_ips:
+            allowed_ips += ("IP:" + ip + ",")
+        self.remote.run(
+            args=[
+                "sudo", "openssl", "req", "-x509", "-newkey", "rsa:4096", "-nodes", "-keyout", "/etc/ceph/server.key",
+                "-out", "/etc/ceph/server.crt", "-days", "3650", "-subj", "/CN=my.server", "-addext", f"subjectAltName={allowed_ips[:-1]}" 
+            ]
+        )
+        self.remote.run(
+            args=[
+                "sudo", "openssl", "req", "-x509", "-newkey", "rsa:4096", "-nodes", "-keyout", "/etc/ceph/client.key",
+                "-out", "/etc/ceph/client.crt", "-days", "3650", "-subj", "/CN=client1"
+            ]
+        )
+        secrets_files = {"/etc/ceph/server.key": None, 
+                 "/etc/ceph/server.crt": None, 
+                 "/etc/ceph/client.key": None, 
+                 "/etc/ceph/client.crt": None, 
+                }
+        for file in secrets_files.keys():
+            secrets_files[file] = self.remote.read_file(path=file, sudo=True)
+
+        for remote in self.ctx.cluster.remotes.keys():
+            for remote_file in secrets_files.keys():
+                data = secrets_files[remote_file]
+                remote.sudo_write_file(path=remote_file, data=data, mode='0644')
+        log.info("[nvmeof]: written mtls config!")
+
     def set_gateway_cfg(self):
         log.info('[nvmeof]: running set_gateway_cfg...')
         ip_address = self.remote.ip_address
@@ -167,6 +207,8 @@ class Nvmeof(Task):
                 data=conf_data,
                 sudo=True
             )
+        if self.create_mtls_secrets: 
+            self.write_mtls_config(gateway_ips)
         log.info("[nvmeof]: executed set_gateway_cfg successfully!")
 
 
@@ -335,6 +377,37 @@ class NvmeofThrasher(Thrasher, Greenlet):
                 self.log('switch_task: done waiting for the other thrasher')
                 other_thrasher.switch_thrasher.clear()
 
+    def kill_daemon(self, daemon):
+        kill_methods = [
+            "ceph_daemon_stop", "systemctl_stop",
+            "daemon_remove",
+        ]
+        chosen_method = self.rng.choice(kill_methods)
+        d_name = '%s.%s' % (daemon.type_, daemon.id_)
+        if chosen_method == "ceph_daemon_stop": 
+            daemon.remote.run(args=[
+                "ceph", "orch", "daemon", "stop",
+                d_name
+            ], check_status=False)
+        elif chosen_method == "systemctl_stop":
+            daemon.stop()
+        elif chosen_method == "daemon_remove":
+            daemon.remote.run(args=[
+                "ceph", "orch", "daemon", "rm",
+                d_name
+            ], check_status=False)
+        return chosen_method
+
+    def revive_daemon(self, daemon, killed_method):
+        if killed_method == "ceph_daemon_stop":
+            name = '%s.%s' % (daemon.type_, daemon.id_)
+            daemon.remote.run(args=[
+                "ceph", "orch", "daemon", "restart",
+                name
+            ])
+        elif killed_method == "systemctl_stop":
+            daemon.restart() 
+
     def do_thrash(self):
         self.log('start thrashing')
         self.log(f'seed: {self.random_seed}, , '\
@@ -346,7 +419,7 @@ class NvmeofThrasher(Thrasher, Greenlet):
         summary = []
 
         while not self.stopping.is_set():
-            killed_daemons = []
+            killed_daemons = defaultdict(list)
 
             weight = 1.0 / len(self.daemons)
             count = 0
@@ -372,9 +445,10 @@ class NvmeofThrasher(Thrasher, Greenlet):
                         continue
 
                 self.log('kill {label}'.format(label=daemon.id_))
-                daemon.stop()
+                # daemon.stop()
+                kill_method = self.kill_daemon(daemon)
 
-                killed_daemons.append(daemon)
+                killed_daemons[kill_method].append(daemon)
                 daemons_thrash_history[daemon.id_] += [datetime.now()]
 
                 # only thrash max_thrash_daemons amount of daemons
@@ -383,7 +457,10 @@ class NvmeofThrasher(Thrasher, Greenlet):
                     break
 
             if killed_daemons:
-                summary += ["killed: " + ", ".join([d.id_ for d in killed_daemons])]
+                iteration_summary = "thrashed- "
+                for kill_method in killed_daemons:
+                    iteration_summary += (", ".join([d.id_ for d in killed_daemons[kill_method]]) + f" (by {kill_method}); ") 
+                summary += [iteration_summary]
                 # delay before reviving
                 revive_delay = self.min_revive_delay
                 if self.randomize:
@@ -397,9 +474,11 @@ class NvmeofThrasher(Thrasher, Greenlet):
                 self.switch_task()
 
                 # revive after thrashing
-                for daemon in killed_daemons:
-                    self.log('reviving {label}'.format(label=daemon.id_))
-                    daemon.restart()
+                for kill_method in killed_daemons:
+                    for daemon in killed_daemons[kill_method]:
+                        self.log('reviving {label}'.format(label=daemon.id_))
+                        # daemon.restart()
+                        self.revive_daemon(daemon, kill_method)
                 
                 # delay before thrashing
                 thrash_delay = self.min_thrash_delay

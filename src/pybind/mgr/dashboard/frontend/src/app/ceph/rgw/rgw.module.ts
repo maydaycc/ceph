@@ -6,6 +6,7 @@ import { RouterModule, Routes } from '@angular/router';
 import {
   NgbNavModule,
   NgbPopoverModule,
+  NgbProgressbar,
   NgbTooltipModule,
   NgbTypeaheadModule
 } from '@ng-bootstrap/ng-bootstrap';
@@ -63,10 +64,21 @@ import { RgwMultisiteSyncPolicyDetailsComponent } from './rgw-multisite-sync-pol
 import { RgwMultisiteSyncFlowModalComponent } from './rgw-multisite-sync-flow-modal/rgw-multisite-sync-flow-modal.component';
 import { RgwMultisiteSyncPipeModalComponent } from './rgw-multisite-sync-pipe-modal/rgw-multisite-sync-pipe-modal.component';
 import { RgwMultisiteTabsComponent } from './rgw-multisite-tabs/rgw-multisite-tabs.component';
+import {
+  ButtonModule,
+  GridModule,
+  IconModule,
+  LoadingModule,
+  ModalModule,
+  ProgressIndicatorModule,
+  CodeSnippetModule
+} from 'carbon-components-angular';
+import { CephSharedModule } from '../shared/ceph-shared.module';
 
 @NgModule({
   imports: [
     CommonModule,
+    CephSharedModule,
     SharedModule,
     FormsModule,
     ReactiveFormsModule.withConfig({ callSetDisabledState: 'whenDisabledForLegacyCode' }),
@@ -79,7 +91,15 @@ import { RgwMultisiteTabsComponent } from './rgw-multisite-tabs/rgw-multisite-ta
     TreeModule,
     DataTableModule,
     DashboardV3Module,
-    NgbTypeaheadModule
+    NgbTypeaheadModule,
+    ModalModule,
+    GridModule,
+    ProgressIndicatorModule,
+    CodeSnippetModule,
+    ButtonModule,
+    LoadingModule,
+    IconModule,
+    NgbProgressbar
   ],
   exports: [
     RgwDaemonListComponent,
@@ -227,6 +247,7 @@ const routes: Routes = [
       {
         path: 'configuration',
         component: RgwMultisiteDetailsComponent,
+        data: { breadcrumbs: 'Configuration' },
         children: [
           {
             path: 'setup-multisite-replication',
@@ -238,6 +259,7 @@ const routes: Routes = [
       {
         path: 'sync-policy',
         component: RgwMultisiteSyncPolicyComponent,
+        data: { breadcrumbs: 'Sync-policy' },
         children: [
           {
             path: `${URLVerbs.CREATE}`,

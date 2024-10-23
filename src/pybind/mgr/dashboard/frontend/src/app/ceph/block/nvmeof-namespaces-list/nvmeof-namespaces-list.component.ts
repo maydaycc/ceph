@@ -1,4 +1,4 @@
-import { Component, Input, OnChanges, OnInit } from '@angular/core';
+import { Component, Input, OnInit } from '@angular/core';
 import { Router } from '@angular/router';
 import { NvmeofService } from '~/app/shared/api/nvmeof.service';
 import { CriticalConfirmationModalComponent } from '~/app/shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
@@ -13,7 +13,7 @@ import { DimlessBinaryPipe } from '~/app/shared/pipes/dimless-binary.pipe';
 import { IopsPipe } from '~/app/shared/pipes/iops.pipe';
 import { MbpersecondPipe } from '~/app/shared/pipes/mbpersecond.pipe';
 import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
-import { ModalService } from '~/app/shared/services/modal.service';
+import { ModalCdsService } from '~/app/shared/services/modal-cds.service';
 import { TaskWrapperService } from '~/app/shared/services/task-wrapper.service';
 
 const BASE_URL = 'block/nvmeof/subsystems';
@@ -23,9 +23,11 @@ const BASE_URL = 'block/nvmeof/subsystems';
   templateUrl: './nvmeof-namespaces-list.component.html',
   styleUrls: ['./nvmeof-namespaces-list.component.scss']
 })
-export class NvmeofNamespacesListComponent implements OnInit, OnChanges {
+export class NvmeofNamespacesListComponent implements OnInit {
   @Input()
   subsystemNQN: string;
+  @Input()
+  group: string;
 
   namespacesColumns: any;
   tableActions: CdTableAction[];
@@ -36,7 +38,7 @@ export class NvmeofNamespacesListComponent implements OnInit, OnChanges {
   constructor(
     public actionLabels: ActionLabelsI18n,
     private router: Router,
-    private modalService: ModalService,
+    private modalService: ModalCdsService,
     private authStorageService: AuthStorageService,
     private taskWrapper: TaskWrapperService,
     private nvmeofService: NvmeofService,
@@ -117,10 +119,10 @@ export class NvmeofNamespacesListComponent implements OnInit, OnChanges {
         permission: 'create',
         icon: Icons.add,
         click: () =>
-          this.router.navigate([
-            BASE_URL,
-            { outlets: { modal: [URLVerbs.CREATE, this.subsystemNQN, 'namespace'] } }
-          ]),
+          this.router.navigate(
+            [BASE_URL, { outlets: { modal: [URLVerbs.CREATE, this.subsystemNQN, 'namespace'] } }],
+            { queryParams: { group: this.group } }
+          ),
         canBePrimary: (selection: CdTableSelection) => !selection.hasSelection
       },
       {
@@ -128,26 +130,30 @@ export class NvmeofNamespacesListComponent implements OnInit, OnChanges {
         permission: 'update',
         icon: Icons.edit,
         click: () =>
-          this.router.navigate([
-            BASE_URL,
-            {
-              outlets: {
-                modal: [URLVerbs.EDIT, this.subsystemNQN, 'namespace', this.selection.first().nsid]
+          this.router.navigate(
+            [
+              BASE_URL,
+              {
+                outlets: {
+                  modal: [
+                    URLVerbs.EDIT,
+                    this.subsystemNQN,
+                    'namespace',
+                    this.selection.first().nsid
+                  ]
+                }
               }
-            }
-          ])
+            ],
+            { queryParams: { group: this.group } }
+          )
       },
       {
         name: this.actionLabels.DELETE,
         permission: 'delete',
         icon: Icons.destroy,
-        click: () => this.deleteSubsystemModal()
+        click: () => this.deleteNamespaceModal()
       }
     ];
-  }
-
-  ngOnChanges() {
-    this.listNamespaces();
   }
 
   updateSelection(selection: CdTableSelection) {
@@ -156,13 +162,13 @@ export class NvmeofNamespacesListComponent implements OnInit, OnChanges {
 
   listNamespaces() {
     this.nvmeofService
-      .listNamespaces(this.subsystemNQN)
+      .listNamespaces(this.subsystemNQN, this.group)
       .subscribe((res: NvmeofSubsystemNamespace[]) => {
         this.namespaces = res;
       });
   }
 
-  deleteSubsystemModal() {
+  deleteNamespaceModal() {
     const namespace = this.selection.first();
     this.modalService.show(CriticalConfirmationModalComponent, {
       itemDescription: 'Namespace',
@@ -174,7 +180,7 @@ export class NvmeofNamespacesListComponent implements OnInit, OnChanges {
             nqn: this.subsystemNQN,
             nsid: namespace.nsid
           }),
-          call: this.nvmeofService.deleteNamespace(this.subsystemNQN, namespace.nsid)
+          call: this.nvmeofService.deleteNamespace(this.subsystemNQN, namespace.nsid, this.group)
         })
     });
   }

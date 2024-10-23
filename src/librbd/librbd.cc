@@ -275,6 +275,7 @@ void group_snap_info2_cpp_to_c(const librbd::group_snap_info2_t &cpp_info,
   c_info->name = strdup(cpp_info.name.c_str());
   c_info->image_snap_name = strdup(cpp_info.image_snap_name.c_str());
   c_info->state = cpp_info.state;
+  c_info->namespace_type = cpp_info.namespace_type;
   c_info->image_snaps_count = cpp_info.image_snaps.size();
   c_info->image_snaps = static_cast<rbd_group_image_snap_info_t*>(calloc(
     cpp_info.image_snaps.size(), sizeof(rbd_group_image_snap_info_t)));
@@ -1101,6 +1102,18 @@ namespace librbd {
     return librbd::api::Mirror<>::mode_set(io_ctx, mirror_mode);
   }
 
+  int RBD::mirror_remote_namespace_get(IoCtx& io_ctx,
+                                       std::string* remote_namespace) {
+    return librbd::api::Mirror<>::remote_namespace_get(io_ctx,
+                                                       remote_namespace);
+  }
+
+  int RBD::mirror_remote_namespace_set(IoCtx& io_ctx,
+                                       const std::string& remote_namespace) {
+    return librbd::api::Mirror<>::remote_namespace_set(io_ctx,
+                                                       remote_namespace);
+  }
+
   int RBD::mirror_uuid_get(IoCtx& io_ctx, std::string* mirror_uuid) {
     return librbd::api::Mirror<>::uuid_get(io_ctx, mirror_uuid);
   }
@@ -1456,7 +1469,8 @@ namespace librbd {
     }
 
     std::vector<group_snap_info2_t> snaps2;
-    int r = librbd::api::Group<>::snap_list(group_ioctx, group_name, &snaps2);
+    int r = librbd::api::Group<>::snap_list(group_ioctx, group_name, true,
+                                            false, &snaps2);
 
     for (const auto& snap : snaps2) {
       snaps->push_back(
@@ -1473,7 +1487,8 @@ namespace librbd {
   int RBD::group_snap_list2(IoCtx& group_ioctx, const char *group_name,
                             std::vector<group_snap_info2_t> *snaps)
   {
-    return librbd::api::Group<>::snap_list(group_ioctx, group_name, snaps);
+    return librbd::api::Group<>::snap_list(group_ioctx, group_name, true,
+                                           false, snaps);
   }
 
   int RBD::group_snap_get_info(IoCtx& group_ioctx, const char *group_name,
@@ -3393,6 +3408,37 @@ extern "C" int rbd_mirror_mode_set(rados_ioctx_t p,
   librados::IoCtx io_ctx;
   librados::IoCtx::from_rados_ioctx_t(p, io_ctx);
   return librbd::api::Mirror<>::mode_set(io_ctx, mirror_mode);
+}
+
+extern "C" int rbd_mirror_remote_namespace_get(rados_ioctx_t p,
+                                               char *remote_namespace,
+                                               size_t *max_len) {
+  librados::IoCtx io_ctx;
+  librados::IoCtx::from_rados_ioctx_t(p, io_ctx);
+
+  std::string remote_namespace_str;
+  int r = librbd::api::Mirror<>::remote_namespace_get(io_ctx,
+                                                      &remote_namespace_str);
+  if (r < 0) {
+    return r;
+  }
+
+  auto total_len = remote_namespace_str.size() + 1;
+  if (*max_len < total_len) {
+    *max_len = total_len;
+    return -ERANGE;
+  }
+  *max_len = total_len;
+
+  strcpy(remote_namespace, remote_namespace_str.c_str());
+  return 0;
+}
+
+extern "C" int rbd_mirror_remote_namespace_set(rados_ioctx_t p,
+                                               const char *remote_namespace) {
+  librados::IoCtx io_ctx;
+  librados::IoCtx::from_rados_ioctx_t(p, io_ctx);
+  return librbd::api::Mirror<>::remote_namespace_set(io_ctx, remote_namespace);
 }
 
 extern "C" int rbd_mirror_uuid_get(rados_ioctx_t p,
@@ -7322,7 +7368,8 @@ extern "C" int rbd_group_snap_list(rados_ioctx_t group_p,
   }
 
   std::vector<librbd::group_snap_info2_t> cpp_snaps;
-  int r = librbd::api::Group<>::snap_list(group_ioctx, group_name, &cpp_snaps);
+  int r = librbd::api::Group<>::snap_list(group_ioctx, group_name, true, false,
+                                          &cpp_snaps);
 
   if (r == -ENOENT) {
     *snaps_size = 0;
@@ -7372,7 +7419,8 @@ extern "C" int rbd_group_snap_list2(rados_ioctx_t group_p,
   librados::IoCtx::from_rados_ioctx_t(group_p, group_ioctx);
 
   std::vector<librbd::group_snap_info2_t> cpp_snaps;
-  int r = librbd::api::Group<>::snap_list(group_ioctx, group_name, &cpp_snaps);
+  int r = librbd::api::Group<>::snap_list(group_ioctx, group_name, true, false,
+                                          &cpp_snaps);
   if (r < 0) {
     return r;
   }

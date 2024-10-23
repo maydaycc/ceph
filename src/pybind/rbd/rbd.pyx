@@ -134,6 +134,8 @@ RBD_GROUP_IMAGE_STATE_INCOMPLETE = _RBD_GROUP_IMAGE_STATE_INCOMPLETE
 RBD_GROUP_SNAP_STATE_INCOMPLETE = _RBD_GROUP_SNAP_STATE_INCOMPLETE
 RBD_GROUP_SNAP_STATE_COMPLETE = _RBD_GROUP_SNAP_STATE_COMPLETE
 
+RBD_GROUP_SNAP_NAMESPACE_TYPE_USER = _RBD_GROUP_SNAP_NAMESPACE_TYPE_USER
+
 RBD_IMAGE_MIGRATION_STATE_UNKNOWN = _RBD_IMAGE_MIGRATION_STATE_UNKNOWN
 RBD_IMAGE_MIGRATION_STATE_ERROR = _RBD_IMAGE_MIGRATION_STATE_ERROR
 RBD_IMAGE_MIGRATION_STATE_PREPARING = _RBD_IMAGE_MIGRATION_STATE_PREPARING
@@ -1329,6 +1331,52 @@ class RBD(object):
             ret = rbd_mirror_mode_set(_ioctx, _mirror_mode)
         if ret != 0:
             raise make_ex(ret, 'error setting mirror mode')
+
+    def mirror_remote_namespace_get(self, ioctx):
+        """
+        Get mirror remote namespace
+
+        :param ioctx: determines which RADOS pool is read
+        :type ioctx: :class:`rados.Ioctx`
+        :returns: str - mirror remote namespace
+        """
+        cdef:
+            rados_ioctx_t _ioctx = convert_ioctx(ioctx)
+            char *_remote_namespace = NULL
+            size_t _max_size = 512
+        try:
+            while True:
+                _remote_namespace = <char *>realloc_chk(_remote_namespace,
+                                                        _max_size)
+                with nogil:
+                    ret = rbd_mirror_remote_namespace_get(_ioctx,
+                                                          _remote_namespace,
+                                                          &_max_size)
+                if ret >= 0:
+                    break
+                elif ret != -errno.ERANGE:
+                    raise make_ex(ret, 'error retrieving remote namespace')
+            return decode_cstr(_remote_namespace)
+        finally:
+            free(_remote_namespace)
+
+    def mirror_remote_namespace_set(self, ioctx, remote_namespace):
+        """
+        Set mirror remote namespace
+
+        :param ioctx: determines which RADOS pool is written
+        :type ioctx: :class:`rados.Ioctx`
+        :param remote_namespace: the remote cluster namespace to mirror to
+        :type str:
+        """
+        remote_namespace = cstr(remote_namespace, 'remote_namespace')
+        cdef:
+            rados_ioctx_t _ioctx = convert_ioctx(ioctx)
+            char *_remote_namespace = remote_namespace
+        with nogil:
+            ret = rbd_mirror_remote_namespace_set(_ioctx, _remote_namespace)
+        if ret != 0:
+            raise make_ex(ret, 'error setting remote namespace')
 
     def mirror_uuid_get(self, ioctx):
         """
@@ -2797,6 +2845,8 @@ cdef class Group(object):
 
             * ``state`` (int) - state of the group snapshot
 
+            * ``namespace_type`` (int) - group snapshot namespace type
+
             * ``image_snap_name`` (str) - name of the image snapshots
 
             * ``image_snaps`` (list) - image snapshots that constitute the group snapshot.
@@ -2835,6 +2885,7 @@ cdef class Group(object):
             'id': decode_cstr(group_snap.id),
             'name': decode_cstr(group_snap.name),
             'state': group_snap.state,
+            'namespace_type': group_snap.namespace_type,
             'image_snap_name': decode_cstr(group_snap.image_snap_name),
             'image_snaps': image_snaps
         }
@@ -6009,6 +6060,8 @@ cdef class GroupSnapIterator(object):
 
     * ``state`` (int) - state of the group snapshot
 
+    * ``namespace_type`` (int) - group snapshot namespace type
+
     * ``image_snap_name`` (str) - name of the image snapshots
 
     * ``image_snaps`` (list) - image snapshots that constitute the group snapshot.
@@ -6059,6 +6112,7 @@ cdef class GroupSnapIterator(object):
                 'id': decode_cstr(group_snap.id),
                 'name': decode_cstr(group_snap.name),
                 'state': group_snap.state,
+                'namespace_type': group_snap.namespace_type,
                 'image_snap_name': decode_cstr(group_snap.image_snap_name),
                 'image_snaps': image_snaps,
             }

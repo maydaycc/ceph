@@ -333,13 +333,11 @@ static int get_obj_policy_from_attr(const DoutPrefixProvider *dpp,
 
 static boost::optional<Policy>
 get_iam_policy_from_attr(CephContext* cct,
-                         const map<string, bufferlist>& attrs)
+                         const map<string, bufferlist>& attrs,
+                         const string& tenant)
 {
   if (auto i = attrs.find(RGW_ATTR_IAM_POLICY); i != attrs.end()) {
-    // resource policy is not restricted to the current tenant
-    const std::string* policy_tenant = nullptr;
-
-    return Policy(cct, policy_tenant, i->second.to_str(), false);
+    return Policy(cct, &tenant, i->second.to_str(), false);
   } else {
     return none;
   }
@@ -424,7 +422,7 @@ static int read_obj_policy(const DoutPrefixProvider *dpp,
     mpobj->set_in_extra_data(true);
     object = mpobj.get();
   }
-  policy = get_iam_policy_from_attr(s->cct, bucket_attrs);
+  policy = get_iam_policy_from_attr(s->cct, bucket_attrs, s->bucket_tenant);
 
   int ret = get_obj_policy_from_attr(dpp, s->cct, driver, s->bucket_owner,
 				     acl, storage_class, object, s->yield);
@@ -602,7 +600,7 @@ int rgw_build_bucket_policies(const DoutPrefixProvider *dpp, rgw::sal::Driver* d
   }
 
   try {
-    s->iam_policy = get_iam_policy_from_attr(s->cct, s->bucket_attrs);
+    s->iam_policy = get_iam_policy_from_attr(s->cct, s->bucket_attrs, s->bucket_tenant);
   } catch (const std::exception& e) {
     ldpp_dout(dpp, 0) << "Error reading IAM Policy: " << e.what() << dendl;
 
@@ -943,37 +941,131 @@ void handle_replication_status_header(
 }
 
 /*
- * GET on CloudTiered objects is processed only when sent from the sync client.
- * In all other cases, fail with `ERR_INVALID_OBJECT_STATE`.
+ * GET on CloudTiered objects either it will synced to other zones.
+ * In all other cases, it will try to fetch the object from remote cloud endpoint.
  */
-int handle_cloudtier_obj(rgw::sal::Attrs& attrs, bool sync_cloudtiered) {
+int handle_cloudtier_obj(req_state* s, const DoutPrefixProvider *dpp, rgw::sal::Driver* driver,
+                         rgw::sal::Attrs& attrs, bool sync_cloudtiered, std::optional<uint64_t> days,
+                         bool restore_op, optional_yield y)
+{
   int op_ret = 0;
+  ldpp_dout(dpp, 20) << "reached handle cloud tier " << dendl;
   auto attr_iter = attrs.find(RGW_ATTR_MANIFEST);
-  if (attr_iter != attrs.end()) {
-    RGWObjManifest m;
-    try {
-      decode(m, attr_iter->second);
-      if (m.get_tier_type() == "cloud-s3") {
-        if (!sync_cloudtiered) {
-          /* XXX: Instead send presigned redirect or read-through */
-          op_ret = -ERR_INVALID_OBJECT_STATE;
-        } else { // fetch object for sync and set cloud_tier attrs
-          bufferlist t, t_tier;
-          RGWObjTier tier_config;
-          m.get_tier_config(&tier_config);
-
-          t.append("cloud-s3");
-          attrs[RGW_ATTR_CLOUD_TIER_TYPE] = t;
-          encode(tier_config, t_tier);
-          attrs[RGW_ATTR_CLOUD_TIER_CONFIG] = t_tier;
-        }
-      }
-    } catch (const buffer::end_of_buffer&) {
-      // ignore empty manifest; it's not cloud-tiered
-    } catch (const std::exception& e) {
+  if (attr_iter == attrs.end()) {
+    if (restore_op) {
+      op_ret = -ERR_INVALID_OBJECT_STATE;
+      s->err.message = "only cloud tier object can be restored";
+      return op_ret;
+    } else { //ignore for read-through
+      return 0;
     }
   }
+  RGWObjManifest m;
+  try { 
+    decode(m, attr_iter->second);
+    if (m.get_tier_type() != "cloud-s3") {
+      ldpp_dout(dpp, 20) << "not a cloud tier object " <<  s->object->get_key().name << dendl;
+      if (restore_op) {
+        op_ret = -ERR_INVALID_OBJECT_STATE;
+        s->err.message = "only cloud tier object can be restored";
+        return op_ret;
+      } else { //ignore for read-through
+        return 0;
+      }
+    }
+    RGWObjTier tier_config;
+    m.get_tier_config(&tier_config);
+    if (sync_cloudtiered) {
+      bufferlist t, t_tier;
+      t.append("cloud-s3");
+      attrs[RGW_ATTR_CLOUD_TIER_TYPE] = t;
+      encode(tier_config, t_tier);
+      attrs[RGW_ATTR_CLOUD_TIER_CONFIG] = t_tier;
+      return op_ret;
+    }
+    attr_iter = attrs.find(RGW_ATTR_RESTORE_STATUS);
+    rgw::sal::RGWRestoreStatus restore_status = rgw::sal::RGWRestoreStatus::None;
+    if (attr_iter != attrs.end()) {
+      bufferlist bl = attr_iter->second;
+      auto iter = bl.cbegin();
+      decode(restore_status, iter);
+    }
+    if (attr_iter == attrs.end() || restore_status == rgw::sal::RGWRestoreStatus::RestoreFailed) {
+      // first time restore or previous restore failed
+      rgw::sal::Bucket* pbucket = NULL;
+      pbucket = s->bucket.get();
 
+      std::unique_ptr<rgw::sal::PlacementTier> tier;
+      rgw_placement_rule target_placement;
+      target_placement.inherit_from(pbucket->get_placement_rule());
+      attr_iter = attrs.find(RGW_ATTR_STORAGE_CLASS);
+      if (attr_iter != attrs.end()) {
+        target_placement.storage_class = attr_iter->second.to_str();
+      }
+      op_ret = driver->get_zone()->get_zonegroup().get_placement_tier(target_placement, &tier);
+      ldpp_dout(dpp, 20) << "getting tier placement handle cloud tier" << op_ret <<
+                       " storage class " << target_placement.storage_class << dendl;
+      if (op_ret < 0) {
+        s->err.message = "failed to restore object";
+        return op_ret;
+      }
+      rgw::sal::RadosPlacementTier* rtier = static_cast<rgw::sal::RadosPlacementTier*>(tier.get());
+      tier_config.tier_placement = rtier->get_rt();
+      if (!restore_op) {
+        if (tier_config.tier_placement.allow_read_through) {
+          days = tier_config.tier_placement.read_through_restore_days;
+        } else { //read-through is not enabled
+          op_ret = -ERR_INVALID_OBJECT_STATE;
+          s->err.message = "Read through is not enabled for this config";
+          return op_ret;
+        }
+      }
+      // fill in the entry. XXX: Maybe we can avoid it by passing only necessary params
+      rgw_bucket_dir_entry ent;
+      ent.key.name = s->object->get_key().name;
+      ent.meta.accounted_size = ent.meta.size = s->obj_size;
+      ent.meta.etag = "" ;
+      ceph::real_time mtime = s->object->get_mtime();
+      uint64_t epoch = 0;
+      op_ret = get_system_versioning_params(s, &epoch, NULL);
+      ldpp_dout(dpp, 20) << "getting versioning params tier placement handle cloud tier" << op_ret << dendl;
+      if (op_ret < 0) {
+	ldpp_dout(dpp, 20) << "failed to get versioning params, op_ret = " << op_ret << dendl;
+        s->err.message = "failed to restore object";
+        return op_ret;
+      }
+      op_ret = s->object->restore_obj_from_cloud(pbucket, tier.get(), target_placement, ent, s->cct, tier_config,
+                                                   mtime, epoch, days, dpp, y, s->bucket->get_info().flags);
+      if (op_ret < 0) {
+        ldpp_dout(dpp, 0) << "object " << ent.key.name << " fetching failed" << op_ret << dendl;
+        s->err.message = "failed to restore object";
+        return op_ret;
+      }
+      ldpp_dout(dpp, 20) << "object " << ent.key.name << " fetching succeed" << dendl;
+      /*  Even if restore is complete the first read through request will return but actually downloaded
+       * object asyncronously.
+       */
+      if (!restore_op) { //read-through
+        op_ret = -ERR_REQUEST_TIMEOUT;
+        ldpp_dout(dpp, 5) << "restore is still in progress, please check restore status and retry" << dendl;
+        s->err.message = "restore is still in progress";
+      }
+      return op_ret;
+    } else if ((!restore_op) && (restore_status == rgw::sal::RGWRestoreStatus::RestoreAlreadyInProgress)) {
+      op_ret = -ERR_REQUEST_TIMEOUT;
+      ldpp_dout(dpp, 5) << "restore is still in progress, please check restore status and retry" << dendl;
+      s->err.message = "restore is still in progress";
+    } else { // CloudRestored..return success
+      return 0;
+    }
+  } catch (const buffer::end_of_buffer&) {
+    //empty manifest; it's not cloud-tiered
+    if (restore_op) {
+      op_ret = -ERR_INVALID_OBJECT_STATE;
+      s->err.message = "only cloud tier object can be restored";
+    }
+  } catch (const std::exception& e) {
+  }
   return op_ret;
 }
 
@@ -1971,7 +2063,7 @@ int RGWGetObj::handle_user_manifest(const char *prefix, optional_yield y)
       ldpp_dout(this, 0) << "failed to read bucket policy" << dendl;
       return r;
     }
-    _bucket_policy = get_iam_policy_from_attr(s->cct, bucket_attrs);
+    _bucket_policy = get_iam_policy_from_attr(s->cct, bucket_attrs, auth_tenant);
     bucket_policy = &_bucket_policy;
     pbucket = ubucket.get();
   } else {
@@ -2106,7 +2198,7 @@ int RGWGetObj::handle_slo_manifest(bufferlist& bl, optional_yield y)
           return r;
 	}
 	auto _bucket_policy = get_iam_policy_from_attr(
-	  s->cct, tmp_bucket->get_attrs());
+	  s->cct, tmp_bucket->get_attrs(), auth_tenant);
         bucket_policy = _bucket_policy.get_ptr();
 	buckets[bucket_name].swap(tmp_bucket);
         policies[bucket_name] = make_pair(bucket_acl, _bucket_policy);
@@ -2368,15 +2460,12 @@ void RGWGetObj::execute(optional_yield y)
     } catch (const buffer::error&) {}
   }
 
-
   if (get_type() == RGW_OP_GET_OBJ && get_data) {
-    op_ret = handle_cloudtier_obj(attrs, sync_cloudtiered);
+    std::optional<uint64_t> days;
+    op_ret = handle_cloudtier_obj(s, this, driver, attrs, sync_cloudtiered, days, false, y);
     if (op_ret < 0) {
       ldpp_dout(this, 4) << "Cannot get cloud tiered object: " << *s->object
-          <<". Failing with " << op_ret << dendl;
-      if (op_ret == -ERR_INVALID_OBJECT_STATE) {
-        s->err.message = "This object was transitioned to cloud-s3";
-      }
+                       <<". Failing with " << op_ret << dendl;
       goto done_err;
     }
   }
@@ -3853,6 +3942,7 @@ int RGWPutObj::init_processing(optional_yield y) {
       return ret;
     }
     copy_source_bucket_info = bucket->get_info();
+    copy_source_bucket_attrs = bucket->get_attrs();
 
     /* handle x-amz-copy-source-range */
     if (copy_source_range) {
@@ -3912,7 +4002,6 @@ int RGWPutObj::verify_permission(optional_yield y)
 
     RGWAccessControlPolicy cs_acl;
     boost::optional<Policy> policy;
-    map<string, bufferlist> cs_attrs;
     auto cs_bucket = driver->get_bucket(copy_source_bucket_info);
     auto cs_object = cs_bucket->get_object(rgw_obj_key(copy_source_object_name,
                                                        copy_source_version_id));
@@ -3920,7 +4009,7 @@ int RGWPutObj::verify_permission(optional_yield y)
     cs_object->set_prefetch_data();
 
     /* check source object permissions */
-    int ret = read_obj_policy(this, driver, s, copy_source_bucket_info, cs_attrs, cs_acl, nullptr,
+    int ret = read_obj_policy(this, driver, s, copy_source_bucket_info, copy_source_bucket_attrs, cs_acl, nullptr,
                               policy, cs_bucket.get(), cs_object.get(), y, true);
     if (ret < 0) {
       return ret;
@@ -3929,7 +4018,7 @@ int RGWPutObj::verify_permission(optional_yield y)
     RGWAccessControlPolicy cs_bucket_acl;
     ret = rgw_op_get_bucket_policy_from_attr(this, s->cct, driver,
                                              copy_source_bucket_info.owner,
-                                             cs_attrs, cs_bucket_acl, y);
+                                             copy_source_bucket_attrs, cs_bucket_acl, y);
     if (ret < 0) {
       return ret;
     }
@@ -5157,6 +5246,73 @@ void RGWPutMetadataObject::execute(optional_yield y)
   op_ret = s->object->set_obj_attrs(this, &attrs, &rmattrs, s->yield, rgw::sal::FLAG_LOG_OP);
 }
 
+int RGWRestoreObj::init_processing(optional_yield y)
+{
+  int op_ret = get_params(y);
+  if (op_ret < 0) {
+    return op_ret;
+  }
+
+  return RGWOp::init_processing(y);
+}
+
+int RGWRestoreObj::verify_permission(optional_yield y)
+{
+  if (!verify_bucket_permission(this, s, ARN(s->object->get_obj()),
+                                rgw::IAM::s3RestoreObject)) {
+    return -EACCES;
+  }
+
+  return 0;
+}
+
+void RGWRestoreObj::pre_exec()
+{
+  rgw_bucket_object_pre_exec(s);
+}
+
+void RGWRestoreObj::execute(optional_yield y)
+{
+  if (!s->bucket_exists) {
+    op_ret = -ERR_NO_SUCH_BUCKET;
+    return;
+  }
+  
+  s->object->set_atomic();
+  int op_ret = s->object->get_obj_attrs(y, this);
+  if (op_ret < 0) {
+    ldpp_dout(this, 1) << "failed to fetch get_obj_attrs op ret = " << op_ret << dendl;
+    return;
+  }
+  rgw::sal::Attrs attrs = s->object->get_attrs();
+  auto attr_iter = attrs.find(RGW_ATTR_MANIFEST);
+  if (attr_iter != attrs.end()) {
+    RGWObjManifest m;
+    decode(m, attr_iter->second);
+    RGWObjTier tier_config;
+    m.get_tier_config(&tier_config);
+    if (m.get_tier_type() == "cloud-s3") {
+      ldpp_dout(this, 20) << "execute: expiry days" << expiry_days <<dendl;
+      op_ret = handle_cloudtier_obj(s, this, driver, attrs, false, expiry_days, true, y);
+      if (op_ret < 0) {
+        ldpp_dout(this, 4) << "Cannot get cloud tiered object: " << *s->object
+        <<". Failing with " << op_ret << dendl;
+        if (op_ret == -ERR_INVALID_OBJECT_STATE) {
+          s->err.message = "This object was transitioned to cloud-s3";
+        }
+      }
+    } else {
+      ldpp_dout(this, 20) << "not cloud tier object erroring" << dendl;
+      op_ret = -ERR_INVALID_OBJECT_STATE;
+    }
+  } else {
+    ldpp_dout(this, 20) << " manifest not found" << dendl;
+  }
+  ldpp_dout(this, 20) << "completed restore" << dendl;
+
+  return;
+} 
+
 int RGWDeleteObj::handle_slo_manifest(bufferlist& bl, optional_yield y)
 {
   RGWSLOInfo slo_info;
@@ -5553,7 +5709,7 @@ int RGWCopyObj::verify_permission(optional_yield y)
   if (op_ret < 0) {
     return op_ret;
   }
-  auto dest_iam_policy = get_iam_policy_from_attr(s->cct, s->bucket->get_attrs());
+  auto dest_iam_policy = get_iam_policy_from_attr(s->cct, s->bucket->get_attrs(), s->bucket_tenant);
 
   //Add destination bucket tags for authorization
   auto [has_s3_existing_tag, has_s3_resource_tag] = rgw_check_policy_condition(this, dest_iam_policy, s->iam_identity_policies, s->session_policies);
@@ -6097,7 +6253,8 @@ void RGWPutLC::execute(optional_yield y)
     return;
   }
 
-  op_ret = driver->get_rgwlc()->set_bucket_config(s->bucket.get(), s->bucket_attrs, &new_config);
+  op_ret = driver->get_rgwlc()->set_bucket_config(this, y, s->bucket.get(),
+                                                  s->bucket_attrs, &new_config);
   if (op_ret < 0) {
     return;
   }
@@ -6113,7 +6270,8 @@ void RGWDeleteLC::execute(optional_yield y)
     return;
   }
 
-  op_ret = driver->get_rgwlc()->remove_bucket_config(s->bucket.get(), s->bucket_attrs);
+  op_ret = driver->get_rgwlc()->remove_bucket_config(this, y, s->bucket.get(),
+                                                     s->bucket_attrs);
   if (op_ret < 0) {
     return;
   }
@@ -6703,13 +6861,59 @@ void RGWCompleteMultipart::execute(optional_yield y)
     return;
   }
 
+  RGWObjVersionTracker& objv_tracker = meta_obj->get_version_tracker();
+
+  using prefix_map_t = rgw::sal::MultipartUpload::prefix_map_t;
+  prefix_map_t processed_prefixes;
+
   op_ret =
     upload->complete(this, y, s->cct, parts->parts, remove_objs, accounted_size,
-		     compressed, cs_info, ofs, s->req_id, s->owner, olh_epoch,
-		     s->object.get());
+                     compressed, cs_info, ofs, s->req_id, s->owner, olh_epoch,
+                     s->object.get(), processed_prefixes);
   if (op_ret < 0) {
     ldpp_dout(this, 0) << "ERROR: upload complete failed ret=" << op_ret << dendl;
     return;
+  }
+
+  remove_objs.clear();
+
+  // use cls_version_check() when deleting the meta object to detect part uploads that raced
+  // with upload->complete(). any parts that finish after that won't be part of the final
+  // upload, so they need to be gc'd and removed from the bucket index before retrying
+  // deletion of the multipart meta object
+  static constexpr auto MAX_DELETE_RETRIES = 15u;
+  for (auto i = 0u; i < MAX_DELETE_RETRIES; i++) {
+    // remove the upload meta object ; the meta object is not versioned
+    // when the bucket is, as that would add an unneeded delete marker
+    int ret = meta_obj->delete_object(this, y, rgw::sal::FLAG_PREVENT_VERSIONING, &remove_objs, &objv_tracker);
+    if (ret != -ECANCELED || i == MAX_DELETE_RETRIES - 1) {
+      if (ret >= 0) {
+        /* serializer's exclusive lock is released */
+        serializer->clear_locked();
+      } else {
+        ldpp_dout(this, 1) << "ERROR: failed to remove object " << meta_obj << ", ret: " << ret << dendl;
+      }
+      break;
+    }
+
+    ldpp_dout(this, 20) << "deleting meta_obj is cancelled due to mismatch cls_version: " << objv_tracker << dendl;
+    objv_tracker.clear();
+
+    ret = meta_obj->get_obj_attrs(s->yield, this);
+    if (ret < 0) {
+      ldpp_dout(this, 1) << "ERROR: failed to get obj attrs, obj=" << meta_obj
+			 << " ret=" << ret << dendl;
+
+      if (ret != -ENOENT) {
+	ldpp_dout(this, 0) << "ERROR: failed to remove object " << meta_obj << dendl;
+      }
+      break;
+    }
+
+    ret = upload->cleanup_orphaned_parts(this, s->cct, y, meta_obj->get_obj(), remove_objs, processed_prefixes);
+    if (ret < 0) {
+      ldpp_dout(this, 0) << "ERROR: failed to clenup orphaned parts. ret=" << ret << dendl;
+    }
   }
 
   const ceph::real_time upload_time = upload->get_mtime();
@@ -6721,17 +6925,6 @@ void RGWCompleteMultipart::execute(optional_yield y)
     ldpp_dout(this, 1) << "ERROR: publishing notification failed, with error: " << ret << dendl;
     // too late to rollback operation, hence op_ret is not set here
   }
-
-  // remove the upload meta object ; the meta object is not versioned
-  // when the bucket is, as that would add an unneeded delete marker
-  ret = meta_obj->delete_object(this, y, rgw::sal::FLAG_PREVENT_VERSIONING);
-  if (ret >= 0) {
-    /* serializer's exclusive lock is released */
-    serializer->clear_locked();
-  } else {
-    ldpp_dout(this, 4) << "WARNING: failed to remove object " << meta_obj << ", ret: " << ret << dendl;
-  }
-
 } // RGWCompleteMultipart::execute
 
 bool RGWCompleteMultipart::check_previously_completed(const RGWMultiCompleteUpload* parts)
@@ -7196,7 +7389,7 @@ bool RGWBulkDelete::Deleter::verify_permission(RGWBucketInfo& binfo,
     return false;
   }
 
-  auto policy = get_iam_policy_from_attr(s->cct, battrs);
+  auto policy = get_iam_policy_from_attr(s->cct, battrs, binfo.bucket.tenant);
 
   bucket_owner = bacl.get_owner();
 
@@ -7536,7 +7729,7 @@ bool RGWBulkUploadOp::handle_file_verify_permission(RGWBucketInfo& binfo,
     return false;
   }
 
-  auto policy = get_iam_policy_from_attr(s->cct, battrs);
+  auto policy = get_iam_policy_from_attr(s->cct, battrs, binfo.bucket.tenant);
 
   return verify_bucket_permission(this, s, ARN(obj), s->user_acl, bacl, policy,
                                   s->iam_identity_policies, s->session_policies,
@@ -8180,7 +8373,7 @@ void RGWPutBucketPolicy::execute(optional_yield y)
 
   try {
     const Policy p(
-      s->cct, nullptr, data.to_str(),
+      s->cct, &s->bucket_tenant, data.to_str(),
       s->cct->_conf.get_val<bool>("rgw_policy_reject_invalid_principals"));
     rgw::sal::Attrs attrs(s->bucket_attrs);
     if (s->bucket_access_conf &&
@@ -8231,7 +8424,7 @@ void RGWGetBucketPolicy::execute(optional_yield y)
   rgw::sal::Attrs attrs(s->bucket_attrs);
   auto aiter = attrs.find(RGW_ATTR_IAM_POLICY);
   if (aiter == attrs.end()) {
-    ldpp_dout(this, 0) << "can't find bucket IAM POLICY attr bucket_name = "
+    ldpp_dout(this, 20) << "can't find bucket IAM POLICY attr bucket_name = "
         << s->bucket_name << dendl;
     op_ret = -ERR_NO_SUCH_BUCKET_POLICY;
     s->err.message = "The bucket policy does not exist";
@@ -8746,7 +8939,7 @@ void RGWGetBucketPublicAccessBlock::execute(optional_yield y)
   auto attrs = s->bucket_attrs;
   if (auto aiter = attrs.find(RGW_ATTR_PUBLIC_ACCESS);
       aiter == attrs.end()) {
-    ldpp_dout(this, 0) << "can't find bucket IAM POLICY attr bucket_name = "
+    ldpp_dout(this, 20) << "can't find bucket IAM POLICY attr bucket_name = "
 		       << s->bucket_name << dendl;
 
     op_ret = -ERR_NO_SUCH_PUBLIC_ACCESS_BLOCK_CONFIGURATION;
@@ -8878,7 +9071,7 @@ void RGWGetBucketEncryption::execute(optional_yield y)
   const auto& attrs = s->bucket_attrs;
   if (auto aiter = attrs.find(RGW_ATTR_BUCKET_ENCRYPTION_POLICY);
       aiter == attrs.end()) {
-    ldpp_dout(this, 0) << "can't find BUCKET ENCRYPTION attr for bucket_name = " << s->bucket_name << dendl;
+    ldpp_dout(this, 20) << "can't find BUCKET ENCRYPTION attr for bucket_name = " << s->bucket_name << dendl;
     op_ret = -ENOENT;
     s->err.message = "The server side encryption configuration was not found";
     return;

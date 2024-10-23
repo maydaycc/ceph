@@ -9,8 +9,8 @@ import { Permission } from '~/app/shared/models/permissions';
 import { AuthStorageService } from '~/app/shared/services/auth-storage.service';
 import { TaskWrapperService } from '~/app/shared/services/task-wrapper.service';
 import { FinishedTask } from '~/app/shared/models/finished-task';
-import { Router } from '@angular/router';
-import { NvmeofService } from '~/app/shared/api/nvmeof.service';
+import { ActivatedRoute, Router } from '@angular/router';
+import { MAX_NAMESPACE, NvmeofService } from '~/app/shared/api/nvmeof.service';
 
 @Component({
   selector: 'cd-nvmeof-subsystems-form',
@@ -23,6 +23,8 @@ export class NvmeofSubsystemsFormComponent implements OnInit {
   action: string;
   resource: string;
   pageURL: string;
+  defaultMaxNamespace: number = MAX_NAMESPACE;
+  group: string;
 
   constructor(
     private authStorageService: AuthStorageService,
@@ -30,7 +32,8 @@ export class NvmeofSubsystemsFormComponent implements OnInit {
     public activeModal: NgbActiveModal,
     private nvmeofService: NvmeofService,
     private taskWrapperService: TaskWrapperService,
-    private router: Router
+    private router: Router,
+    private route: ActivatedRoute
   ) {
     this.permission = this.authStorageService.getPermissions().nvmeof;
     this.resource = $localize`Subsystem`;
@@ -48,6 +51,9 @@ export class NvmeofSubsystemsFormComponent implements OnInit {
   );
 
   ngOnInit() {
+    this.route.queryParams.subscribe((params) => {
+      this.group = params?.['group'];
+    });
     this.createForm();
     this.action = this.actionLabels.CREATE;
   }
@@ -65,11 +71,21 @@ export class NvmeofSubsystemsFormComponent implements OnInit {
           )
         ],
         asyncValidators: [
-          CdValidators.unique(this.nvmeofService.isSubsystemPresent, this.nvmeofService)
+          CdValidators.unique(
+            this.nvmeofService.isSubsystemPresent,
+            this.nvmeofService,
+            null,
+            null,
+            this.group
+          )
         ]
       }),
-      max_namespaces: new UntypedFormControl(256, {
-        validators: [CdValidators.number(false), Validators.max(256), Validators.min(1)]
+      max_namespaces: new UntypedFormControl(this.defaultMaxNamespace, {
+        validators: [
+          CdValidators.number(false),
+          Validators.max(this.defaultMaxNamespace),
+          Validators.min(1)
+        ]
       })
     });
   }
@@ -82,8 +98,9 @@ export class NvmeofSubsystemsFormComponent implements OnInit {
 
     const request = {
       nqn,
-      max_namespaces,
-      enable_ha: true
+      enable_ha: true,
+      gw_group: this.group,
+      max_namespaces
     };
 
     if (!max_namespaces) {

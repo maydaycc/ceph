@@ -16,18 +16,19 @@ import { NotificationService } from '~/app/shared/services/notification.service'
 import { NotificationType } from '~/app/shared/enum/notification-type.enum';
 import { CellTemplate } from '~/app/shared/enum/cell-template.enum';
 import { MultiCluster } from '~/app/shared/models/multi-cluster';
-import { Router } from '@angular/router';
+import { ActivatedRoute, Router } from '@angular/router';
 import { CookiesService } from '~/app/shared/services/cookie.service';
 import { Observable, Subscription } from 'rxjs';
 import { SettingsService } from '~/app/shared/api/settings.service';
 import { ModalCdsService } from '~/app/shared/services/modal-cds.service';
+import { ListWithDetails } from '~/app/shared/classes/list-with-details.class';
 
 @Component({
   selector: 'cd-multi-cluster-list',
   templateUrl: './multi-cluster-list.component.html',
   styleUrls: ['./multi-cluster-list.component.scss']
 })
-export class MultiClusterListComponent implements OnInit, OnDestroy {
+export class MultiClusterListComponent extends ListWithDetails implements OnInit, OnDestroy {
   @ViewChild(TableComponent)
   table: TableComponent;
   @ViewChild('urlTpl', { static: true })
@@ -49,6 +50,7 @@ export class MultiClusterListComponent implements OnInit, OnDestroy {
   currentUrl: string;
   icons = Icons;
   managedByConfig$: Observable<any>;
+  prometheusConnectionError: any[] = [];
 
   constructor(
     private multiClusterService: MultiClusterService,
@@ -59,8 +61,10 @@ export class MultiClusterListComponent implements OnInit, OnDestroy {
     private modalService: ModalService,
     private cookieService: CookiesService,
     private settingsService: SettingsService,
-    private cdsModalService: ModalCdsService
+    private cdsModalService: ModalCdsService,
+    private route: ActivatedRoute
   ) {
+    super();
     this.tableActions = [
       {
         permission: 'create',
@@ -223,10 +227,6 @@ export class MultiClusterListComponent implements OnInit, OnDestroy {
     });
   }
 
-  updateSelection(selection: CdTableSelection) {
-    this.selection = selection;
-  }
-
   openDeleteClusterModal() {
     const cluster = this.selection.first();
     this.modalRef = this.cdsModalService.show(CriticalConfirmationModalComponent, {
@@ -263,5 +263,19 @@ export class MultiClusterListComponent implements OnInit, OnDestroy {
       }
     }
     return false;
+  }
+
+  updateSelection(selection: CdTableSelection) {
+    this.selection = selection;
+  }
+
+  setExpandedRow(expandedRow: any) {
+    super.setExpandedRow(expandedRow);
+    this.router.navigate(['performance-details'], { relativeTo: this.route });
+  }
+
+  refresh() {
+    this.multiClusterService.refresh();
+    this.multiClusterService.refreshTokenStatus();
   }
 }

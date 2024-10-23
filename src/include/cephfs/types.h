@@ -226,7 +226,6 @@ struct vinodeno_t {
     ls.push_back(new vinodeno_t);
     ls.push_back(new vinodeno_t(1, 2));
   }
-
   inodeno_t ino;
   snapid_t snapid;
 };
@@ -371,7 +370,6 @@ public:
   void decode(ceph::buffer::list::const_iterator& bl);
   void dump(ceph::Formatter *f) const;
   static void generate_test_instances(std::list<inline_data_t*>& ls);
-
   version_t version = 1;
 
 private:
@@ -408,9 +406,9 @@ struct inode_t {
   bool is_file()    const { return (mode & S_IFMT) == S_IFREG; }
 
   bool is_truncating() const { return (truncate_pending > 0); }
-  void truncate(uint64_t old_size, uint64_t new_size, const bufferlist &fbl) {
+  void truncate(uint64_t old_size, uint64_t new_size, ::ceph::buffer::list::const_iterator fblp) {
     truncate(old_size, new_size);
-    fscrypt_last_block = fbl;
+    fblp.copy(fblp.get_remaining(), fscrypt_last_block);
   }
   void truncate(uint64_t old_size, uint64_t new_size) {
     ceph_assert(new_size <= old_size);
@@ -606,10 +604,9 @@ struct inode_t {
 
   std::basic_string<char,std::char_traits<char>,Allocator<char>> stray_prior_path; //stores path before unlink
 
-  std::vector<uint8_t> fscrypt_auth;
-  std::vector<uint8_t> fscrypt_file;
-
-  bufferlist fscrypt_last_block;
+  std::vector<uint8_t,Allocator<uint8_t>> fscrypt_auth;
+  std::vector<uint8_t,Allocator<uint8_t>> fscrypt_file;
+  std::vector<uint8_t,Allocator<uint8_t>> fscrypt_last_block;
 
 private:
   bool older_is_consistent(const inode_t &other) const;
@@ -862,6 +859,8 @@ void inode_t<Allocator>::dump(ceph::Formatter *f) const
   f->dump_unsigned("file_data_version", file_data_version);
   f->dump_unsigned("xattr_version", xattr_version);
   f->dump_unsigned("backtrace_version", backtrace_version);
+  f->dump_unsigned("inline_data_version", inline_data.version);
+  f->dump_unsigned("inline_data_length", inline_data.length());
 
   f->dump_string("stray_prior_path", stray_prior_path);
   f->dump_unsigned("max_size_ever", max_size_ever);

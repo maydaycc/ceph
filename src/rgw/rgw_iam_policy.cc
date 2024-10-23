@@ -160,6 +160,8 @@ static const actpair actpairs[] =
  { "iam:DeleteOIDCProvider", iamDeleteOIDCProvider},
  { "iam:GetOIDCProvider", iamGetOIDCProvider},
  { "iam:ListOIDCProviders", iamListOIDCProviders},
+ { "iam:AddClientIdToOIDCProvider", iamAddClientIdToOIDCProvider},
+ { "iam:UpdateOIDCProviderThumbprint", iamUpdateOIDCProviderThumbprint},
  { "iam:TagRole", iamTagRole},
  { "iam:ListRoleTags", iamListRoleTags},
  { "iam:UntagRole", iamUntagRole},
@@ -594,6 +596,7 @@ bool ParseState::do_string(CephContext* cct, const char* s, size_t l) {
   bool is_action = false;
   bool is_valid_action = false;
   Statement* t = p.statements.empty() ? nullptr : &(p.statements.back());
+  ceph_assert(t || w->id == TokenID::Version || w->id == TokenID::Id);
 
   // Top level!
   if (w->id == TokenID::Version) {
@@ -1549,6 +1552,12 @@ const char* action_bit_string(uint64_t action) {
 
   case iamListOIDCProviders:
     return "iam:ListOIDCProviders";
+
+  case iamAddClientIdToOIDCProvider:
+    return "iam:AddClientIdToOIDCProvider";
+
+  case iamUpdateOIDCProviderThumbprint:
+    return "iam:UpdateOIDCProviderThumbprint";
 
   case iamTagRole:
     return "iam:TagRole";

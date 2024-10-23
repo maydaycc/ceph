@@ -73,7 +73,6 @@ extern "C" {
 #include "services/svc_cls.h"
 #include "services/svc_bilog_rados.h"
 #include "services/svc_mdlog.h"
-#include "services/svc_meta_be_otp.h"
 #include "services/svc_user.h"
 #include "services/svc_zone.h"
 
@@ -223,6 +222,7 @@ void usage()
   cout << "  realm rename                     rename a realm\n";
   cout << "  realm set                        set realm info (requires infile)\n";
   cout << "  realm default                    set realm as default\n";
+  cout << "  realm default rm                 clear the current default realm\n";
   cout << "  realm pull                       pull a realm and its current period\n";
   cout << "  zonegroup add                    add a zone to a zonegroup\n";
   cout << "  zonegroup create                 create a new zone group info\n";
@@ -317,6 +317,8 @@ void usage()
   cout << "  reshard cancel                   cancel resharding a bucket\n";
   cout << "  reshard stale-instances list     list stale-instances from bucket resharding\n";
   cout << "  reshard stale-instances delete   cleanup stale-instances from bucket resharding\n";
+  cout << "  reshardlog list                  list bucket resharding log\n";
+  cout << "  reshardlog purge                 trim bucket resharding log\n";
   cout << "  sync error list                  list sync error\n";
   cout << "  sync error trim                  trim sync error\n";
   cout << "  mfa create                       create a new MFA TOTP token\n";
@@ -818,6 +820,7 @@ enum class OPT {
   REALM_RENAME,
   REALM_SET,
   REALM_DEFAULT,
+  REALM_DEFAULT_RM,
   REALM_PULL,
   PERIOD_DELETE,
   PERIOD_GET,
@@ -863,6 +866,8 @@ enum class OPT {
   MFA_RESYNC,
   RESHARD_STALE_INSTANCES_LIST,
   RESHARD_STALE_INSTANCES_DELETE,
+  RESHARDLOG_LIST,
+  RESHARDLOG_PURGE,
   PUBSUB_TOPIC_LIST,
   PUBSUB_TOPIC_GET,
   PUBSUB_TOPIC_RM,
@@ -1059,6 +1064,7 @@ static SimpleCmd::Commands all_cmds = {
   { "realm rename", OPT::REALM_RENAME },
   { "realm set", OPT::REALM_SET },
   { "realm default", OPT::REALM_DEFAULT },
+  { "realm default rm", OPT::REALM_DEFAULT_RM },
   { "realm pull", OPT::REALM_PULL },
   { "period delete", OPT::PERIOD_DELETE },
   { "period get", OPT::PERIOD_GET },
@@ -1112,6 +1118,8 @@ static SimpleCmd::Commands all_cmds = {
   { "reshard stale list", OPT::RESHARD_STALE_INSTANCES_LIST },
   { "reshard stale-instances delete", OPT::RESHARD_STALE_INSTANCES_DELETE },
   { "reshard stale delete", OPT::RESHARD_STALE_INSTANCES_DELETE },
+  { "reshardlog list", OPT::RESHARDLOG_LIST},
+  { "reshardlog purge", OPT::RESHARDLOG_PURGE},
   { "topic list", OPT::PUBSUB_TOPIC_LIST },
   { "topic get", OPT::PUBSUB_TOPIC_GET },
   { "topic rm", OPT::PUBSUB_TOPIC_RM },
@@ -1150,6 +1158,8 @@ BIIndexType get_bi_index_type(const string& type_str) {
     return BIIndexType::Instance;
   if (type_str == "olh")
     return BIIndexType::OLH;
+  if (type_str == "resharddeleted")
+    return BIIndexType::ReshardDeleted;
 
   return BIIndexType::Invalid;
 }
@@ -4256,7 +4266,7 @@ int main(int argc, const char **argv)
 			 OPT::REALM_LIST_PERIODS,
 			 OPT::REALM_GET_DEFAULT,
 			 OPT::REALM_RENAME, OPT::REALM_SET,
-			 OPT::REALM_DEFAULT, OPT::REALM_PULL};
+			 OPT::REALM_DEFAULT, OPT::REALM_DEFAULT_RM, OPT::REALM_PULL};
 
     std::set<OPT> readonly_ops_list = {
                          OPT::USER_INFO,
@@ -5110,6 +5120,12 @@ int main(int argc, const char **argv)
 	  cerr << "failed to set realm as default: " << cpp_strerror(-ret) << std::endl;
 	  return -ret;
 	}
+      }
+      break;
+    case OPT::REALM_DEFAULT_RM:
+      if (int ret = cfgstore->delete_default_realm_id(dpp(), null_yield); ret < 0) {
+        cerr << "failed to remove default realm: " << cpp_strerror(-ret) << std::endl;
+        return -ret;
       }
       break;
     case OPT::REALM_PULL:
@@ -6839,7 +6855,7 @@ int main(int argc, const char **argv)
       }
       std::unique_ptr<rgw::sal::RGWRole> role = driver->get_role(role_name, tenant, account_id, path,
                                                                  assume_role_doc, description, max_session_duration);
-      ret = role->create(dpp(), true, "", null_yield);
+      ret = role->create(dpp(), "", null_yield);
       if (ret < 0) {
         return -ret;
       }
@@ -6868,7 +6884,7 @@ int main(int argc, const char **argv)
         return -EINVAL;
       }
       std::unique_ptr<rgw::sal::RGWRole> role = driver->get_role(role_name, tenant, account_id);
-      ret = role->get(dpp(), null_yield);
+      ret = role->load_by_name(dpp(), null_yield);
       if (ret < 0) {
         return -ret;
       }
@@ -6898,12 +6914,13 @@ int main(int argc, const char **argv)
       }
 
       std::unique_ptr<rgw::sal::RGWRole> role = driver->get_role(role_name, tenant, account_id);
-      ret = role->get(dpp(), null_yield);
+      ret = role->load_by_name(dpp(), null_yield);
       if (ret < 0) {
         return -ret;
       }
       role->update_trust_policy(assume_role_doc);
-      ret = role->update(dpp(), null_yield);
+      constexpr bool exclusive = false;
+      ret = role->store_info(dpp(), exclusive, null_yield);
       if (ret < 0) {
         return -ret;
       }
@@ -6993,12 +7010,13 @@ int main(int argc, const char **argv)
       }
 
       std::unique_ptr<rgw::sal::RGWRole> role = driver->get_role(role_name, tenant, account_id);
-      ret = role->get(dpp(), null_yield);
+      ret = role->load_by_name(dpp(), null_yield);
       if (ret < 0) {
         return -ret;
       }
       role->set_perm_policy(policy_name, perm_policy_doc);
-      ret = role->update(dpp(), null_yield);
+      constexpr bool exclusive = false;
+      ret = role->store_info(dpp(), exclusive, null_yield);
       if (ret < 0) {
         return -ret;
       }
@@ -7012,7 +7030,7 @@ int main(int argc, const char **argv)
         return -EINVAL;
       }
       std::unique_ptr<rgw::sal::RGWRole> role = driver->get_role(role_name, tenant, account_id);
-      ret = role->get(dpp(), null_yield);
+      ret = role->load_by_name(dpp(), null_yield);
       if (ret < 0) {
         return -ret;
       }
@@ -7032,7 +7050,7 @@ int main(int argc, const char **argv)
         return -EINVAL;
       }
       std::unique_ptr<rgw::sal::RGWRole> role = driver->get_role(role_name, tenant, account_id);
-      int ret = role->get(dpp(), null_yield);
+      int ret = role->load_by_name(dpp(), null_yield);
       if (ret < 0) {
         return -ret;
       }
@@ -7056,7 +7074,7 @@ int main(int argc, const char **argv)
         return -EINVAL;
       }
       std::unique_ptr<rgw::sal::RGWRole> role = driver->get_role(role_name, tenant, account_id);
-      ret = role->get(dpp(), null_yield);
+      ret = role->load_by_name(dpp(), null_yield);
       if (ret < 0) {
         return -ret;
       }
@@ -7064,7 +7082,8 @@ int main(int argc, const char **argv)
       if (ret < 0) {
         return -ret;
       }
-      ret = role->update(dpp(), null_yield);
+      constexpr bool exclusive = false;
+      ret = role->store_info(dpp(), exclusive, null_yield);
       if (ret < 0) {
         return -ret;
       }
@@ -7093,7 +7112,7 @@ int main(int argc, const char **argv)
       }
 
       std::unique_ptr<rgw::sal::RGWRole> role = driver->get_role(role_name, tenant, account_id);
-      ret = role->get(dpp(), null_yield);
+      ret = role->load_by_id(dpp(), null_yield);
       if (ret < 0) {
         return -ret;
       }
@@ -7108,7 +7127,8 @@ int main(int argc, const char **argv)
         cout << "That managed policy is already attached." << std::endl;
         return EEXIST;
       }
-      ret = role->update(dpp(), null_yield);
+      constexpr bool exclusive = false;
+      ret = role->store_info(dpp(), exclusive, null_yield);
       if (ret < 0) {
         return -ret;
       }
@@ -7127,7 +7147,7 @@ int main(int argc, const char **argv)
       }
 
       std::unique_ptr<rgw::sal::RGWRole> role = driver->get_role(role_name, tenant, account_id);
-      ret = role->get(dpp(), null_yield);
+      ret = role->load_by_id(dpp(), null_yield);
       if (ret < 0) {
         return -ret;
       }
@@ -7140,7 +7160,8 @@ int main(int argc, const char **argv)
       }
       policies.arns.erase(i);
 
-      ret = role->update(dpp(), null_yield);
+      constexpr bool exclusive = false;
+      ret = role->store_info(dpp(), exclusive, null_yield);
       if (ret < 0) {
         return -ret;
       }
@@ -7154,7 +7175,7 @@ int main(int argc, const char **argv)
         return EINVAL;
       }
       std::unique_ptr<rgw::sal::RGWRole> role = driver->get_role(role_name, tenant, account_id);
-      ret = role->get(dpp(), null_yield);
+      ret = role->load_by_id(dpp(), null_yield);
       if (ret < 0) {
         return -ret;
       }
@@ -7170,7 +7191,7 @@ int main(int argc, const char **argv)
       }
 
       std::unique_ptr<rgw::sal::RGWRole> role = driver->get_role(role_name, tenant, account_id);
-      ret = role->get(dpp(), null_yield);
+      ret = role->load_by_name(dpp(), null_yield);
       if (ret < 0) {
         return -ret;
       }
@@ -7179,7 +7200,8 @@ int main(int argc, const char **argv)
         ret = -EINVAL;
         return ret;
       }
-      ret = role->update(dpp(), null_yield);
+      constexpr bool exclusive = false;
+      ret = role->store_info(dpp(), exclusive, null_yield);
       if (ret < 0) {
         return -ret;
       }
@@ -7915,7 +7937,7 @@ next:
       do {
         entries.clear();
 	// if object is specified, we use that as a filter to only retrieve some entries
-        ret = static_cast<rgw::sal::RadosStore*>(driver)->getRados()->bi_list(bs, object, marker, max_entries, &entries, &is_truncated, null_yield);
+        ret = static_cast<rgw::sal::RadosStore*>(driver)->getRados()->bi_list(bs, object, marker, max_entries, &entries, &is_truncated, false, null_yield);
         if (ret < 0) {
           ldpp_dout(dpp(), 0) << "ERROR: bi_list(): " << cpp_strerror(-ret) << dendl;
           return -ret;
@@ -8784,10 +8806,7 @@ next:
 	formatter->dump_string("tag", info.tag);
 	formatter->dump_stream("time") << info.time;
 	formatter->open_array_section("objs");
-        list<cls_rgw_obj>::iterator liter;
-	cls_rgw_obj_chain& chain = info.chain;
-	for (liter = chain.objs.begin(); liter != chain.objs.end(); ++liter) {
-	  cls_rgw_obj& obj = *liter;
+	for (const auto& obj : info.chain.objs) {
           encode_json("obj", obj, formatter.get());
 	}
 	formatter->close_section(); // objs
@@ -8818,16 +8837,16 @@ next:
 
   if (opt_cmd == OPT::LC_LIST) {
     formatter->open_array_section("lifecycle_list");
-    vector<std::unique_ptr<rgw::sal::Lifecycle::LCEntry>> bucket_lc_map;
+    vector<rgw::sal::LCEntry> bucket_lc_map;
     string marker;
     int index{0};
 #define MAX_LC_LIST_ENTRIES 100
     if (max_entries < 0) {
       max_entries = MAX_LC_LIST_ENTRIES;
     }
+    RGWLC* lc = driver->get_rgwlc();
     do {
-      int ret = static_cast<rgw::sal::RadosStore*>(driver)->getRados()->list_lc_progress(marker, max_entries,
-						    bucket_lc_map, index);
+      int ret = lc->list_lc_progress(marker, max_entries, bucket_lc_map, index);
       if (ret < 0) {
         cerr << "ERROR: failed to list objs: " << cpp_strerror(-ret)
 	     << std::endl;
@@ -8835,17 +8854,15 @@ next:
       }
       for (const auto& entry : bucket_lc_map) {
         formatter->open_object_section("bucket_lc_info");
-        formatter->dump_string("bucket", entry->get_bucket());
-	formatter->dump_string("shard", entry->get_oid());
+        formatter->dump_string("bucket", entry.bucket);
 	char exp_buf[100];
-	time_t t{time_t(entry->get_start_time())};
+        time_t t = entry.start_time;
 	if (std::strftime(
 	      exp_buf, sizeof(exp_buf),
 	      "%a, %d %b %Y %T %Z", std::gmtime(&t))) {
 	  formatter->dump_string("started", exp_buf);
 	}
-        string lc_status = LC_STATUS[entry->get_status()];
-        formatter->dump_string("status", lc_status);
+        formatter->dump_string("status", LC_STATUS[entry.status]);
         formatter->close_section(); // objs
         formatter->flush(cout);
       }
@@ -10812,13 +10829,13 @@ next:
     }
 
     real_time mtime = real_clock::now();
-    string oid = static_cast<rgw::sal::RadosStore*>(driver)->svc()->cls->mfa.get_mfa_oid(user->get_id());
 
-    int ret = static_cast<rgw::sal::RadosStore*>(driver)->ctl()->meta.mgr->mutate(RGWSI_MetaBackend_OTP::get_meta_key(user->get_id()),
-					     mtime, &objv_tracker,
-					     null_yield, dpp(),
-					     MDLOG_STATUS_WRITE,
-					     [&] {
+    int ret = static_cast<rgw::sal::RadosStore*>(driver)->ctl()->meta.mgr->mutate(
+        rgwrados::otp::get_meta_key(user->get_id()),
+        mtime, &objv_tracker,
+        null_yield, dpp(),
+        MDLOG_STATUS_WRITE,
+        [&] {
       return static_cast<rgw::sal::RadosStore*>(driver)->svc()->cls->mfa.create_mfa(dpp(), user->get_id(), config, &objv_tracker, mtime, null_yield);
     });
     if (ret < 0) {
@@ -10850,11 +10867,12 @@ next:
 
     real_time mtime = real_clock::now();
 
-    int ret = static_cast<rgw::sal::RadosStore*>(driver)->ctl()->meta.mgr->mutate(RGWSI_MetaBackend_OTP::get_meta_key(user->get_id()),
-					     mtime, &objv_tracker,
-					     null_yield, dpp(),
-					     MDLOG_STATUS_WRITE,
-					     [&] {
+    int ret = static_cast<rgw::sal::RadosStore*>(driver)->ctl()->meta.mgr->mutate(
+        rgwrados::otp::get_meta_key(user->get_id()),
+        mtime, &objv_tracker,
+        null_yield, dpp(),
+        MDLOG_STATUS_WRITE,
+        [&] {
       return static_cast<rgw::sal::RadosStore*>(driver)->svc()->cls->mfa.remove_mfa(dpp(), user->get_id(), totp_serial, &objv_tracker, mtime, null_yield);
     });
     if (ret < 0) {
@@ -10997,11 +11015,12 @@ next:
     /* now update the backend */
     real_time mtime = real_clock::now();
 
-    ret = static_cast<rgw::sal::RadosStore*>(driver)->ctl()->meta.mgr->mutate(RGWSI_MetaBackend_OTP::get_meta_key(user->get_id()),
-				         mtime, &objv_tracker,
-				         null_yield, dpp(),
-				         MDLOG_STATUS_WRITE,
-				         [&] {
+    ret = static_cast<rgw::sal::RadosStore*>(driver)->ctl()->meta.mgr->mutate(
+        rgwrados::otp::get_meta_key(user->get_id()),
+        mtime, &objv_tracker,
+        null_yield, dpp(),
+        MDLOG_STATUS_WRITE,
+        [&] {
       return static_cast<rgw::sal::RadosStore*>(driver)->svc()->cls->mfa.create_mfa(dpp(), user->get_id(), config, &objv_tracker, mtime, null_yield);
     });
     if (ret < 0) {
@@ -11036,6 +11055,90 @@ next:
      cerr << "ERROR: deleting stale instances" << cpp_strerror(-ret) << std::endl;
    }
  }
+
+  if (opt_cmd == OPT::RESHARDLOG_LIST) {
+    if (bucket_name.empty()) {
+      cerr << "ERROR: bucket not specified" << std::endl;
+      return EINVAL;
+    }
+    int ret = init_bucket(tenant, bucket_name, bucket_id, &bucket);
+    if (ret < 0) {
+      cerr << "ERROR: could not init bucket: " << cpp_strerror(-ret) << std::endl;
+      return -ret;
+    }
+
+    list<rgw_cls_bi_entry> entries;
+    bool is_truncated;
+    if (max_entries < 0)
+      max_entries = 1000;
+
+    const auto& index = bucket->get_info().layout.current_index;
+    if (index.layout.type == rgw::BucketIndexType::Indexless) {
+      cerr << "ERROR: indexless bucket has no index to purge" << std::endl;
+      return EINVAL;
+    }
+
+    int max_shards = rgw::num_shards(index);
+
+    formatter->open_array_section("entries");
+    int i = (specified_shard_id ? shard_id : 0);
+    for (; i < max_shards; i++) {
+      formatter->open_object_section("shard");
+      encode_json("shard_id", i, formatter.get());
+      formatter->open_array_section("shard_entries");
+      RGWRados::BucketShard bs(static_cast<rgw::sal::RadosStore*>(driver)->getRados());
+      int ret = bs.init(dpp(), bucket->get_info(), index, i, null_yield);
+      if (ret < 0) {
+        cerr << "ERROR: bs.init(bucket=" << bucket << ", shard=" << i << "): " << cpp_strerror(-ret) << std::endl;
+        return -ret;
+      }
+
+      marker.clear();
+      do {
+        entries.clear();
+        ret = static_cast<rgw::sal::RadosStore*>(driver)->getRados()->bi_list(bs, "", marker, max_entries,
+                                                                              &entries, &is_truncated,
+                                                                              true, null_yield);
+        if (ret < 0) {
+          cerr << "ERROR: bi_list(): " << cpp_strerror(-ret) << std::endl;
+          return -ret;
+        }
+
+        list<rgw_cls_bi_entry>::iterator iter;
+        for (iter = entries.begin(); iter != entries.end(); ++iter) {
+          rgw_cls_bi_entry& entry = *iter;
+          formatter->dump_string("idx", entry.idx);
+          marker = entry.idx;
+        }
+        formatter->flush(cout);
+      } while (is_truncated);
+      formatter->close_section();
+      formatter->close_section();
+      formatter->flush(cout);
+
+      if (specified_shard_id)
+        break;
+    }
+    formatter->close_section();
+    formatter->flush(cout);
+  }
+
+  if (opt_cmd == OPT::RESHARDLOG_PURGE) {
+    if (bucket_name.empty()) {
+      cerr << "ERROR: bucket not specified" << std::endl;
+      return EINVAL;
+    }
+    int ret = init_bucket(tenant, bucket_name, bucket_id, &bucket);
+    if (ret < 0) {
+      cerr << "ERROR: could not init bucket: " << cpp_strerror(-ret) << std::endl;
+      return -ret;
+    }
+    ret = static_cast<rgw::sal::RadosStore*>(driver)->getRados()->trim_reshard_log_entries(dpp(), bucket->get_info(), null_yield);
+    if (ret < 0) {
+      cerr << "ERROR: trim_reshard_log_entries(): " << cpp_strerror(-ret) << std::endl;
+      return -ret;
+    }
+  }
 
   if (opt_cmd == OPT::PUBSUB_NOTIFICATION_LIST) {
     if (bucket_name.empty()) {
@@ -11084,22 +11187,22 @@ next:
     }
 
     formatter->open_object_section("result");
-    formatter->open_array_section("topics");
-    do {
-      rgw_pubsub_topics result;
-      int ret = ps.get_topics(dpp(), next_token, max_entries,
-                              result, next_token, null_yield);
-      if (ret < 0 && ret != -ENOENT) {
-        cerr << "ERROR: could not get topics: " << cpp_strerror(-ret) << std::endl;
-        return -ret;
-      }
-      for (const auto& [_, topic] : result.topics) {
-        if (owner && *owner != topic.owner) {
-          continue;
+    rgw_pubsub_topics result;
+    if (rgw::all_zonegroups_support(*site, rgw::zone_features::notification_v2) &&
+        driver->stat_topics_v1(tenant, null_yield, dpp()) == -ENOENT) {
+      formatter->open_array_section("topics");
+      do {
+        int ret = ps.get_topics_v2(dpp(), next_token, max_entries,
+                                   result, next_token, null_yield);
+        if (ret < 0 && ret != -ENOENT) {
+          cerr << "ERROR: could not get topics: " << cpp_strerror(-ret) << std::endl;
+          return -ret;
         }
-        std::set<std::string> subscribed_buckets;
-        if (rgw::all_zonegroups_support(*site, rgw::zone_features::notification_v2) &&
-            driver->stat_topics_v1(tenant, null_yield, dpp()) == -ENOENT) {
+        for (const auto& [_, topic] : result.topics) {
+          if (owner && *owner != topic.owner) {
+            continue;
+          }
+          std::set<std::string> subscribed_buckets;
           ret = driver->get_bucket_topic_mapping(topic, subscribed_buckets,
                                                  null_yield, dpp());
           if (ret < 0) {
@@ -11107,15 +11210,21 @@ next:
                  << topic.name << ", ret=" << ret << std::endl;
           }
           show_topics_info_v2(topic, subscribed_buckets, formatter.get());
-        } else {
-          encode_json("result", result, formatter.get());
+          if (max_entries_specified) {
+            --max_entries;
+          }
         }
-        if (max_entries_specified) {
-          --max_entries;
-        }
+        result.topics.clear();
+      } while (!next_token.empty() && max_entries > 0);
+      formatter->close_section(); // topics
+    } else { // v1, list all topics
+      int ret = ps.get_topics_v1(dpp(), result, null_yield);
+      if (ret < 0 && ret != -ENOENT) {
+        cerr << "ERROR: could not get topics: " << cpp_strerror(-ret) << std::endl;
+        return -ret;
       }
-    } while (!next_token.empty() && max_entries > 0);
-    formatter->close_section(); // topics
+      encode_json("result", result, formatter.get());
+    }
     if (max_entries_specified) {
       encode_json("truncated", !next_token.empty(), formatter.get());
       if (!next_token.empty()) {

@@ -10,8 +10,13 @@ const WAIT_TIMER = 1000;
 export class MultiClusterPageHelper extends PageHelper {
   pages = pages;
 
+  columnIndex = {
+    alias: 2,
+    connection: 3
+  };
+
   auth(url: string, alias: string, username: string, password: string) {
-    this.clickActionButton('connect');
+    cy.contains('button', 'Connect').click();
     cy.get('cd-multi-cluster-form').should('exist');
     cy.get('cd-modal').within(() => {
       cy.get('input[name=remoteClusterUrl]').type(url);
@@ -24,8 +29,7 @@ export class MultiClusterPageHelper extends PageHelper {
   }
 
   disconnect(alias: string) {
-    this.getFirstTableCell(alias).click();
-    this.clickActionButton('disconnect');
+    this.clickRowActionButton(alias, 'disconnect');
     cy.get('cds-modal').within(() => {
       cy.get('#confirmation_input').click({ force: true });
       cy.get('cd-submit-button').click();
@@ -34,8 +38,7 @@ export class MultiClusterPageHelper extends PageHelper {
   }
 
   reconnect(alias: string, password: string) {
-    this.getFirstTableCell(alias).click();
-    this.clickActionButton('reconnect');
+    this.clickRowActionButton(alias, 'reconnect');
     cy.get('cd-modal').within(() => {
       cy.get('input[name=password]').type(password);
       cy.get('cd-submit-button').click();
@@ -44,12 +47,27 @@ export class MultiClusterPageHelper extends PageHelper {
   }
 
   edit(alias: string, newAlias: string) {
-    this.getFirstTableCell(alias).click();
-    this.clickActionButton('edit');
+    this.clickRowActionButton(alias, 'edit');
     cy.get('cd-modal').within(() => {
       cy.get('input[name=clusterAlias]').clear().type(newAlias);
       cy.get('cd-submit-button').click();
     });
     cy.wait(WAIT_TIMER);
+  }
+
+  checkConnectionStatus(alias: string, expectedStatus = 'CONNECTED', shouldReload = true) {
+    let aliasIndex = this.columnIndex.alias;
+    let statusIndex = this.columnIndex.connection;
+    if (shouldReload) {
+      cy.reload(true, { log: true, timeout: 5 * 1000 });
+    }
+
+    this.getTableCell(aliasIndex, alias)
+      .parent()
+      .find(`[cdstabledata]:nth-child(${statusIndex}) .badge`)
+      .should(($ele) => {
+        const status = $ele.toArray().map((v) => v.innerText);
+        expect(status).to.include(expectedStatus);
+      });
   }
 }

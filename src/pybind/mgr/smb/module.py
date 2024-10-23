@@ -1,10 +1,11 @@
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, cast
+from typing import TYPE_CHECKING, Any, List, Optional, cast
 
 import logging
 
 import orchestrator
 from ceph.deployment.service_spec import PlacementSpec, SMBSpec
 from mgr_module import MgrModule, Option, OptionLevel
+from mgr_util import CephFSEarmarkResolver
 
 from . import (
     cli,
@@ -17,7 +18,12 @@ from . import (
     sqlite_store,
     utils,
 )
-from .enums import AuthMode, JoinSourceType, UserGroupSourceType
+from .enums import (
+    AuthMode,
+    JoinSourceType,
+    SMBClustering,
+    UserGroupSourceType,
+)
 from .proto import AccessAuthorizer, ConfigStore, Simplified
 
 if TYPE_CHECKING:
@@ -50,9 +56,8 @@ class Module(orchestrator.OrchestratorClientMixin, MgrModule):
         path_resolver = kwargs.pop('path_resolver', None)
         authorizer = kwargs.pop('authorizer', None)
         uo = kwargs.pop('update_orchestration', None)
+        earmark_resolver = kwargs.pop('earmark_resolver', None)
         super().__init__(*args, **kwargs)
-        # the update_orchestration property only works post-init
-        update_orchestration = self.update_orchestration if uo is None else uo
         if internal_store is not None:
             self._internal_store = internal_store
             log.info('Using internal_store passed to class: {internal_store}')
@@ -66,6 +71,7 @@ class Module(orchestrator.OrchestratorClientMixin, MgrModule):
             public_store or rados_store.RADOSConfigStore.init(self)
         )
         path_resolver = path_resolver or fs.CachingCephFSPathResolver(self)
+        earmark_resolver = earmark_resolver or CephFSEarmarkResolver(self)
         # Why the honk is the cast needed but path_resolver doesn't need it??
         # Sometimes mypy drives me batty.
         authorizer = cast(
@@ -77,7 +83,8 @@ class Module(orchestrator.OrchestratorClientMixin, MgrModule):
             public_store=self._public_store,
             path_resolver=path_resolver,
             authorizer=authorizer,
-            orch=(self if update_orchestration else None),
+            orch=self._orch_backend(enable_orch=uo),
+            earmark_resolver=earmark_resolver,
         )
 
     def _backend_store(self, store_conf: str = '') -> ConfigStore:
@@ -105,6 +112,18 @@ class Module(orchestrator.OrchestratorClientMixin, MgrModule):
             log.info('Using specified backend: mgr pool sqlite3 db')
             return sqlite_store.mgr_sqlite3_db(self, opts)
         raise ValueError(f'invalid internal store: {name}')
+
+    def _orch_backend(
+        self, enable_orch: Optional[bool] = None
+    ) -> Optional['Module']:
+        if enable_orch is not None:
+            log.info('smb orchestration argument supplied: %r', enable_orch)
+            return self if enable_orch else None
+        if self.update_orchestration:
+            log.warning('smb orchestration enabled by module')
+            return self
+        log.warning('smb orchestration is disabled')
+        return None
 
     @property
     def update_orchestration(self) -> bool:
@@ -151,6 +170,8 @@ class Module(orchestrator.OrchestratorClientMixin, MgrModule):
         define_user_pass: Optional[List[str]] = None,
         custom_dns: Optional[List[str]] = None,
         placement: Optional[str] = None,
+        clustering: Optional[SMBClustering] = None,
+        public_addrs: Optional[List[str]] = None,
     ) -> results.Result:
         """Create an smb cluster"""
         domain_settings = None
@@ -235,6 +256,18 @@ class Module(orchestrator.OrchestratorClientMixin, MgrModule):
                 )
             )
 
+        c_public_addrs = []
+        if public_addrs:
+            for pa in public_addrs:
+                pa_arr = pa.split('%', 1)
+                address = pa_arr[0]
+                destination = pa_arr[1] if len(pa_arr) > 1 else None
+                c_public_addrs.append(
+                    resources.ClusterPublicIPAssignment(
+                        address=address, destination=destination
+                    )
+                )
+
         pspec = resources.WrappedPlacementSpec.wrap(
             PlacementSpec.from_string(placement)
         )
@@ -245,6 +278,8 @@ class Module(orchestrator.OrchestratorClientMixin, MgrModule):
             user_group_settings=user_group_settings,
             custom_dns=custom_dns,
             placement=pspec,
+            clustering=clustering,
+            public_addrs=c_public_addrs,
         )
         to_apply.append(cluster)
         return self._handler.apply(to_apply, create_only=True).squash(cluster)
@@ -314,45 +349,6 @@ class Module(orchestrator.OrchestratorClientMixin, MgrModule):
         if len(resources) == 1:
             return resources[0].to_simplified()
         return {'resources': [r.to_simplified() for r in resources]}
-
-    @cli.SMBCommand('dump cluster-config', perm='r')
-    def dump_config(self, cluster_id: str) -> Dict[str, Any]:
-        """DEBUG: Generate an example configuration"""
-        # TODO: Remove this command prior to release
-        return self._handler.generate_config(cluster_id)
-
-    @cli.SMBCommand('dump service-spec', perm='r')
-    def dump_service_spec(self, cluster_id: str) -> Dict[str, Any]:
-        """DEBUG: Generate an example smb service spec"""
-        # TODO: Remove this command prior to release
-        return dict(
-            self._handler.generate_smb_service_spec(cluster_id).to_json()
-        )
-
-    @cli.SMBCommand('dump everything', perm='r')
-    def dump_everything(self) -> Dict[str, Any]:
-        """DEBUG: Show me everything"""
-        # TODO: Remove this command prior to release
-        everything: Dict[str, Any] = {}
-        everything['PUBLIC'] = {}
-        log.warning('dumping PUBLIC')
-        for key in self._public_store:
-            e = self._public_store[key]
-            log.warning('dumping e: %s %r', e.uri, e.full_key)
-            everything['PUBLIC'][e.uri] = e.get()
-        log.warning('dumping PRIV')
-        everything['PRIV'] = {}
-        for key in self._priv_store:
-            e = self._priv_store[key]
-            log.warning('dumping e: %s %r', e.uri, e.full_key)
-            everything['PRIV'][e.uri] = e.get()
-        log.warning('dumping INTERNAL')
-        everything['INTERNAL'] = {}
-        for key in self._internal_store:
-            e = self._internal_store[key]
-            log.warning('dumping e: %s %r', e.uri, e.full_key)
-            everything['INTERNAL'][e.uri] = e.get()
-        return everything
 
     def submit_smb_spec(self, spec: SMBSpec) -> None:
         """Submit a new or updated smb spec object to ceph orchestration."""

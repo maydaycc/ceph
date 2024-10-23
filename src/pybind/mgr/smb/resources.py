@@ -5,7 +5,11 @@ import json
 
 import yaml
 
-from ceph.deployment.service_spec import PlacementSpec
+from ceph.deployment.service_spec import (
+    PlacementSpec,
+    SMBClusterPublicIPSpec,
+    SpecValidationError,
+)
 from object_format import ErrorResponseBase
 
 from . import resourcelib, validation
@@ -16,6 +20,7 @@ from .enums import (
     JoinSourceType,
     LoginAccess,
     LoginCategory,
+    SMBClustering,
     UserGroupSourceType,
 )
 from .proto import Self, Simplified
@@ -345,6 +350,25 @@ class WrappedPlacementSpec(PlacementSpec):
         return self.to_json()
 
 
+# This class is a near 1:1 mirror of the service spec helper class.
+@resourcelib.component()
+class ClusterPublicIPAssignment(_RBase):
+    address: str
+    destination: Union[List[str], str, None] = None
+
+    def to_spec(self) -> SMBClusterPublicIPSpec:
+        return SMBClusterPublicIPSpec(
+            address=self.address,
+            destination=self.destination,
+        )
+
+    def validate(self) -> None:
+        try:
+            self.to_spec().validate()
+        except SpecValidationError as err:
+            raise ValueError(str(err)) from err
+
+
 @resourcelib.resource('ceph.smb.cluster')
 class Cluster(_RBase):
     """Represents a cluster (instance) that is / should be present."""
@@ -358,6 +382,9 @@ class Cluster(_RBase):
     custom_smb_global_options: Optional[Dict[str, str]] = None
     # embedded orchestration placement spec
     placement: Optional[WrappedPlacementSpec] = None
+    # control if the cluster is really a cluster
+    clustering: Optional[SMBClustering] = None
+    public_addrs: Optional[List[ClusterPublicIPAssignment]] = None
 
     def validate(self) -> None:
         if not self.cluster_id:
@@ -394,6 +421,30 @@ class Cluster(_RBase):
     @property
     def cleaned_custom_smb_global_options(self) -> Optional[Dict[str, str]]:
         return validation.clean_custom_options(self.custom_smb_global_options)
+
+    @property
+    def clustering_mode(self) -> SMBClustering:
+        return self.clustering if self.clustering else SMBClustering.DEFAULT
+
+    def is_clustered(self) -> bool:
+        """Return true if smbd instance should use (CTDB) clustering."""
+        if self.clustering_mode == SMBClustering.ALWAYS:
+            return True
+        if self.clustering_mode == SMBClustering.NEVER:
+            return False
+        # do clustering automatically, based on the placement spec's count value
+        count = 0
+        if self.placement and self.placement.count:
+            count = self.placement.count
+        # clustering enabled unless we're deploying a single instance "cluster"
+        return count != 1
+
+    def service_spec_public_addrs(
+        self,
+    ) -> Optional[List[SMBClusterPublicIPSpec]]:
+        if self.public_addrs is None:
+            return None
+        return [a.to_spec() for a in self.public_addrs]
 
 
 @resourcelib.resource('ceph.smb.join.auth')

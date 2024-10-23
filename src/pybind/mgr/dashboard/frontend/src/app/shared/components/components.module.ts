@@ -30,7 +30,12 @@ import {
   CheckboxModule,
   DatePickerModule,
   TimePickerModule,
-  TimePickerSelectModule
+  TimePickerSelectModule,
+  NumberModule,
+  DropdownModule,
+  SelectModule,
+  ComboBoxModule,
+  ProgressIndicatorModule
 } from 'carbon-components-angular';
 
 import { MotdComponent } from '~/app/shared/components/motd/motd.component';
@@ -74,6 +79,7 @@ import { CardGroupComponent } from './card-group/card-group.component';
 import { HelpTextComponent } from './help-text/help-text.component';
 import { FormAdvancedFieldsetComponent } from './form-advanced-fieldset/form-advanced-fieldset.component';
 import { UpgradableComponent } from './upgradable/upgradable.component';
+import { ProgressComponent } from './progress/progress.component';
 
 // Icons
 import InfoIcon from '@carbon/icons/es/information/16';
@@ -107,10 +113,15 @@ import InfoIcon from '@carbon/icons/es/information/16';
     LoadingModule,
     ModalModule,
     InputModule,
+    NumberModule,
     CheckboxModule,
     DatePickerModule,
     TimePickerModule,
-    TimePickerSelectModule
+    TimePickerSelectModule,
+    DropdownModule,
+    SelectModule,
+    ComboBoxModule,
+    ProgressIndicatorModule
   ],
   declarations: [
     SparklineComponent,
@@ -151,7 +162,8 @@ import InfoIcon from '@carbon/icons/es/information/16';
     CardGroupComponent,
     HelpTextComponent,
     FormAdvancedFieldsetComponent,
-    UpgradableComponent
+    UpgradableComponent,
+    ProgressComponent
   ],
   providers: [],
   exports: [
@@ -189,7 +201,8 @@ import InfoIcon from '@carbon/icons/es/information/16';
     CardGroupComponent,
     HelpTextComponent,
     FormAdvancedFieldsetComponent,
-    UpgradableComponent
+    UpgradableComponent,
+    ProgressComponent
   ]
 })
 export class ComponentsModule {

@@ -43,6 +43,7 @@
 #include "rgw_tools.h"
 
 struct D3nDataCache;
+struct RGWLCCloudTierCtx;
 
 class RGWWatcher;
 class ACLOwner;
@@ -771,6 +772,7 @@ public:
 	uint64_t *epoch;
         int* part_num = nullptr;
         std::optional<int> parts_count;
+        RGWObjVersionTracker *objv_tracker = nullptr;
 
         Params() : lastmod(nullptr), obj_size(nullptr), attrs(nullptr),
 		   target_obj(nullptr), epoch(nullptr)
@@ -854,8 +856,9 @@ public:
         rgw_zone_set *zones_trace;
 	bool abortmp;
 	uint64_t parts_accounted_size;
+	obj_version *check_objv;
 
-        DeleteParams() : versioning_status(0), null_verid(false), olh_epoch(0), bilog_flags(0), remove_objs(NULL), high_precision_time(false), zones_trace(nullptr), abortmp(false), parts_accounted_size(0) {}
+        DeleteParams() : versioning_status(0), null_verid(false), olh_epoch(0), bilog_flags(0), remove_objs(NULL), high_precision_time(false), zones_trace(nullptr), abortmp(false), parts_accounted_size(0), check_objv(nullptr) {}
       } params;
 
       struct DeleteResult {
@@ -1231,13 +1234,25 @@ public:
 
   int transition_obj(RGWObjectCtx& obj_ctx,
                      RGWBucketInfo& bucket_info,
-                     const rgw_obj& obj,
+                     rgw_obj obj,
                      const rgw_placement_rule& placement_rule,
                      const real_time& mtime,
                      uint64_t olh_epoch,
                      const DoutPrefixProvider *dpp,
                      optional_yield y,
                      bool log_op = true);
+int restore_obj_from_cloud(RGWLCCloudTierCtx& tier_ctx,
+                             RGWObjectCtx& obj_ctx,
+                             RGWBucketInfo& dest_bucket_info,
+                             const rgw_obj& dest_obj,
+                             rgw_placement_rule& dest_placement,
+                             RGWObjTier& tier_config,
+                             real_time& mtime,
+                             uint64_t olh_epoch,
+                             std::optional<uint64_t> days,
+                             const DoutPrefixProvider *dpp,
+                             optional_yield y,
+                             bool log_op = true);
 
   int check_bucket_empty(const DoutPrefixProvider *dpp, RGWBucketInfo& bucket_info, optional_yield y);
 
@@ -1337,6 +1352,13 @@ public:
 		    const rgw_obj& obj_instance,
 		    RGWBucketInfo& bucket_info,
 		    std::function<int(BucketShard *)> call, optional_yield y);
+  /* clear the progress flag when reshard failed */
+  int check_reshard_logrecord_status(RGWBucketInfo& bucket_info, optional_yield y,
+                                     const DoutPrefixProvider *dpp);
+  int recover_reshard_logrecord(RGWBucketInfo& bucket_info,
+                                     std::map<std::string, bufferlist>& bucket_attrs,
+                                     optional_yield y,
+                                     const DoutPrefixProvider *dpp);
   int block_while_resharding(RGWRados::BucketShard *bs,
                              const rgw_obj& obj_instance,
 			     RGWBucketInfo& bucket_info,
@@ -1526,11 +1548,14 @@ public:
 	      const std::string& marker,
 	      uint32_t max,
 	      std::list<rgw_cls_bi_entry> *entries,
-	      bool *is_truncated, optional_yield y);
-  int bi_list(BucketShard& bs, const std::string& filter_obj, const std::string& marker, uint32_t max, std::list<rgw_cls_bi_entry> *entries, bool *is_truncated, optional_yield y);
+	      bool *is_truncated, bool reshardlog, optional_yield y);
+  int bi_list(BucketShard& bs, const std::string& filter_obj, const std::string& marker, uint32_t max, std::list<rgw_cls_bi_entry> *entries,
+              bool *is_truncated, bool reshardlog, optional_yield y);
   int bi_list(const DoutPrefixProvider *dpp, rgw_bucket& bucket, const std::string& obj_name, const std::string& marker, uint32_t max,
-              std::list<rgw_cls_bi_entry> *entries, bool *is_truncated, optional_yield y);
+              std::list<rgw_cls_bi_entry> *entries, bool *is_truncated, bool reshardlog, optional_yield y);
   int bi_remove(const DoutPrefixProvider *dpp, BucketShard& bs);
+
+  int trim_reshard_log_entries(const DoutPrefixProvider *dpp, RGWBucketInfo& bucket_info, optional_yield y);
 
   int cls_obj_usage_log_add(const DoutPrefixProvider *dpp, const std::string& oid, rgw_usage_log_info& info, optional_yield y);
   int cls_obj_usage_log_read(const DoutPrefixProvider *dpp, const std::string& oid, const std::string& user, const std::string& bucket, uint64_t start_epoch,
@@ -1547,7 +1572,8 @@ public:
 
   void update_gc_chain(const DoutPrefixProvider *dpp, rgw_obj head_obj, RGWObjManifest& manifest, cls_rgw_obj_chain *chain);
   std::tuple<int, std::optional<cls_rgw_obj_chain>> send_chain_to_gc(cls_rgw_obj_chain& chain, const std::string& tag, optional_yield y);
-  void delete_objs_inline(const DoutPrefixProvider *dpp, cls_rgw_obj_chain& chain, const std::string& tag);
+  void delete_objs_inline(const DoutPrefixProvider *dpp, cls_rgw_obj_chain& chain,
+                          const std::string& tag, optional_yield y);
   int gc_operate(const DoutPrefixProvider *dpp, std::string& oid, librados::ObjectWriteOperation *op, optional_yield y);
   int gc_aio_operate(const std::string& oid, librados::AioCompletion *c,
                      librados::ObjectWriteOperation *op);
@@ -1559,9 +1585,6 @@ public:
   int defer_gc(const DoutPrefixProvider *dpp, RGWObjectCtx* ctx, RGWBucketInfo& bucket_info, const rgw_obj& obj, optional_yield y);
 
   int process_lc(const std::unique_ptr<rgw::sal::Bucket>& optional_bucket);
-  int list_lc_progress(std::string& marker, uint32_t max_entries,
-		       std::vector<std::unique_ptr<rgw::sal::Lifecycle::LCEntry>>& progress_map,
-		       int& index);
 
   int bucket_check_index(const DoutPrefixProvider *dpp, RGWBucketInfo& bucket_info,
                          std::map<RGWObjCategory, RGWStorageStats> *existing_stats,
@@ -1578,7 +1601,8 @@ public:
                                         const std::string& marker,
                                         RGWFormatterFlusher& flusher);
 
-  int bucket_set_reshard(const DoutPrefixProvider *dpp, const RGWBucketInfo& bucket_info, const cls_rgw_bucket_instance_entry& entry);
+  int bucket_set_reshard(const DoutPrefixProvider *dpp, const RGWBucketInfo& bucket_info,
+                         const cls_rgw_bucket_instance_entry& entry);
   int remove_objs_from_index(const DoutPrefixProvider *dpp,
 			     RGWBucketInfo& bucket_info,
 			     const std::list<rgw_obj_index_key>& oid_list);
@@ -1631,8 +1655,8 @@ public:
    * will encode that info as a suggested update.)
    */
   int check_disk_state(const DoutPrefixProvider *dpp,
-                       librados::IoCtx io_ctx,
                        RGWBucketInfo& bucket_info,
+                       const rgw_bucket_entry_ver& index_ver,
                        rgw_bucket_dir_entry& list_state,
                        rgw_bucket_dir_entry& object,
                        bufferlist& suggested_updates,

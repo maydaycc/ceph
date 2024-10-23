@@ -208,6 +208,8 @@ private:
                                         Ref<MOSDRepOpReply> m);
   seastar::future<> handle_peering_op(crimson::net::ConnectionRef conn,
                                       Ref<MOSDPeeringOp> m);
+  seastar::future<> handle_pg_remove(crimson::net::ConnectionRef conn,
+				     Ref<MOSDPGRemove> m);
   seastar::future<> handle_recovery_subreq(crimson::net::ConnectionRef conn,
                                            Ref<MOSDFastDispatchOp> m);
   seastar::future<> handle_scrub_command(crimson::net::ConnectionRef conn,
@@ -232,7 +234,9 @@ private:
     Ref<MOSDPGUpdateLogMissingReply> m);
 
 private:
-  crimson::common::Gated gate;
+  crimson::common::gate_per_shard gate;
+
+  ceph_release_t last_require_osd_release{ceph_release_t::unknown};
 
   seastar::promise<> stop_acked;
   void got_stop_ack() {
@@ -247,6 +251,10 @@ private:
 
 public:
   seastar::future<> send_beacon();
+  seastar::future<double> run_bench(int64_t count,
+    int64_t bsize,
+    int64_t osize,
+    int64_t onum);
 
 private:
   LogClient log_client;
